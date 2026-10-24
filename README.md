@@ -130,7 +130,6 @@ hello 5
 hello 6
 
 hello 7
-hello 8
 
 Round-trip upload names use local timestamps such as `repo-20261024-191212.zip.txt`. Temporary source ZIPs, downloaded files and rollback backups are deleted when the run finishes (including errors). The applied repository changes remain in the working tree.
 
