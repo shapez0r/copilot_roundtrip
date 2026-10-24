@@ -8,7 +8,7 @@ A sidebar prompt-and-response interface for the repository-wide `copilot_repo_ro
 2. Open `vscode-extension/` in VS Code, press **F5** to launch an Extension Development Host. Alternatively run `npm run package` (requires npm access to download `@vscode/vsce`) and install the resulting `.vsix` using **Extensions: Install from VSIX...**.
 3. In the Extension Development Host, open your target Git repository folder. Select the **Repo Round-Trip** activity-bar icon.
 4. Click **Sign in** (browser visible for interactive authentication), complete browser sign-in, then click **Finish sign in** in the sidebar.
-5. Enter the exact provider/model pair (for example `Claude/Opus 5.5` or `GPT/GPT-6`) in the **Model** text field. The slash separates provider from the exact UI model name. Select the repository, type a prompt and click **Modify repository** (the run starts immediately, without a confirmation prompt). The response appears in the chat, followed by separate **Changes** and **Git status** sections with green/red/yellow icons (added/deleted/modified); execution and setup status appears in **Execution activity** (with diagnostic logs also available in **Output → Repo Round-Trip**).
+5. Enter the exact provider/model pair (for example `Claude/Opus 5.5` or `GPT/GPT-6`) in the **Model** text field. The slash separates provider from the exact UI model name. Select the repository, type a prompt and click **Modify repository** (the run starts immediately, without a confirmation prompt). The response appears in the chat, followed by separate **Changes** and **Git status** sections with color-coded file paths (green/red/yellow for added/deleted/modified); execution and setup status appears in **Execution activity** (with diagnostic logs also available in **Output → Repo Round-Trip**).
 
 ## Settings
 
@@ -28,4 +28,4 @@ Round-trip upload names use local timestamps such as `repo-20261024-191212.zip.t
 
 The **Show browser** checkbox beside **Sign in** controls subsequent modification runs; it is off by default. The upload can take up to 180 seconds to settle; the send action retries for up to 120 seconds.
 
-During `fix`, the script streams `ROUNDTRIP_STATUS:` JSON lines to stderr for each execution phase (including periodic wait updates); stdout remains the final JSON result. The VS Code sidebar displays these updates live in **Execution activity** as a single rotating line (`Running: <status>`) with a spinner while work is in progress.
+During `fix`, the script streams `ROUNDTRIP_STATUS:` JSON lines to stderr for each execution phase (including periodic wait updates); stdout remains the final JSON result. The VS Code sidebar displays these updates live in **Execution activity** as a single rotating status line with a spinner while work is in progress.

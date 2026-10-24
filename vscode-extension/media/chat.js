@@ -22,8 +22,7 @@
   }
   function makeRow(kind,badge,label,content,index){
     const row=document.createElement('div');row.className='result-row '+kind;row.style.animationDelay=Math.min(index,20)*40+'ms';
-    const icon=document.createElement('span');icon.className='result-icon '+kind;icon.textContent=badge;icon.title=label;icon.setAttribute('aria-label',label);
-    row.append(icon);
+    row.title=label;
     for(const part of content) row.append(part);
     return row;
   }
@@ -43,10 +42,7 @@
       if(!m){summary=line.trim();continue;}
       const graph=m[3]||'', plus=(graph.match(/\+/g)||[]).length, minus=(graph.match(/-/g)||[]).length;
       const kind=plus&&!minus?'added':minus&&!plus?'deleted':'modified';
-      const bar=document.createElement('span');bar.className='result-bar';
-      for(let k=0;k<plus;k++)bar.append(span('bar-add',''));
-      for(let k=0;k<minus;k++)bar.append(span('bar-del',''));
-      list.append(makeRow(kind,kind==='added'?'+':kind==='deleted'?'\u2212':'~',kind==='added'?'Insertions':kind==='deleted'?'Deletions':'Insertions and deletions',[span('result-path',m[1]),span('result-count',m[2]),bar],i++));
+      list.append(makeRow(kind,kind==='added'?'+':kind==='deleted'?'\u2212':'~',kind==='added'?'Insertions':kind==='deleted'?'Deletions':'Insertions and deletions',[span('result-path',m[1]),span('result-count',m[2])],i++));
     }
     if(!i) list.append(makeRow('neutral','\u2713','No changes',[span('result-path','No tracked file changes.')],0));
     if(summary){
@@ -68,12 +64,12 @@
     if(!lines.length){const row=makeRow('added','\u2713','Clean',[span('result-path','Working tree clean.')],0);list.append(row);}
     return s;
   }
-  // Single rotating activity line: "Running: <latest status>" with a spinner while work is active.
+  // Single rotating activity line: "<latest status>" with a spinner while work is active.
   const activity={message:'',busy:false,login:false};
   function renderActivity(){
     const running=activity.busy||activity.login;
     const text=$('activityText'), spinner=$('activitySpinner');
-    const next=running?'Running: '+(activity.message||'Starting...'):(activity.message||'Idle');
+    const next=running?(activity.message||'Starting...'):(activity.message||'Idle');
     spinner.hidden=!running;
     if(text.textContent!==next){text.textContent=next;text.classList.remove('rotate');void text.offsetWidth;text.classList.add('rotate');}
   }
