@@ -19,12 +19,12 @@ header{display:flex;flex-direction:column;align-items:stretch;gap:8px}
 .result-section{border-top:1px solid var(--vscode-panel-border);padding-top:8px;font-size:12px;--rt-add:var(--vscode-gitDecoration-addedResourceForeground,#81b88b);--rt-del:var(--vscode-gitDecoration-deletedResourceForeground,#c74e39);--rt-mod:var(--vscode-gitDecoration-modifiedResourceForeground,#e2c08d)}
 .result-list{display:flex;flex-direction:column;gap:4px;margin-top:6px}
 .result-row{display:flex;align-items:center;gap:8px;min-height:18px;font-weight:600;overflow:hidden;opacity:0;animation:activity-rotate .35s ease-out forwards}
-.result-icon{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:2px solid currentColor;border-radius:50%;font-size:9px;line-height:1;font-weight:700;animation:result-pop .45s ease-out}
+.result-icon{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:2px solid currentColor;border-radius:3px;font-size:9px;line-height:1;font-weight:700;animation:result-pop .45s ease-out}
 .result-icon.added{color:var(--rt-add)}.result-icon.deleted{color:var(--rt-del)}.result-icon.modified{color:var(--rt-mod)}.result-icon.neutral{color:var(--vscode-descriptionForeground,inherit)}
 .result-path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .result-row.added .result-path{color:var(--rt-add)}.result-row.deleted .result-path{color:var(--rt-del)}.result-row.modified .result-path{color:var(--rt-mod)}
 .result-count,.result-code{flex:0 0 auto;opacity:.8;font-family:var(--vscode-editor-font-family,monospace);font-weight:normal}
-.result-bar{flex:0 0 auto;display:inline-flex;gap:1px}.result-bar span{width:6px;height:8px;border-radius:1px;transform-origin:left;animation:result-grow .4s ease-out}.bar-add{background:var(--rt-add)}.bar-del{background:var(--rt-del)}
+.result-bar{flex:0 0 auto;display:inline-flex;gap:2px}.result-bar span{width:7px;height:7px;border-radius:1px;transform-origin:left;animation:result-grow .4s ease-out}.bar-add{background:var(--rt-add)}.bar-del{background:var(--rt-del)}.bar-none{background:var(--vscode-descriptionForeground,#888);opacity:.3}
 .result-summary{margin-top:6px;opacity:.85}.sum-add{color:var(--rt-add)}.sum-del{color:var(--rt-del)}
 @keyframes result-pop{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.15);opacity:1}100%{transform:scale(1)}}
 @keyframes result-grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
@@ -35,3 +35,15 @@ header{display:flex;flex-direction:column;align-items:stretch;gap:8px}
 .result-row.clickable:hover .result-path{text-decoration:underline}
 .result-row.clickable:hover{background:var(--vscode-list-hoverBackground)}
 .result-row.clickable:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+
+/* Text cursor: theme cursor color (black on light themes), never a white caret on a light input. */
+input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCursor-foreground,var(--vscode-input-foreground,currentColor))}
+/* Editable model combobox: preset dropdown + free text. */
+.header-controls .model-combo{position:relative;display:flex;flex:1 1 130px;min-width:110px;max-width:100%}
+.header-controls .model-combo #model{flex:1 1 auto;width:auto;min-width:0;max-width:none;border-right:0}
+.header-controls #modelToggle{flex:0 0 auto;padding:0 7px;border-radius:0;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,transparent);border-left:0;font-size:11px}
+.header-controls #modelToggle:hover{background:var(--vscode-list-hoverBackground)}
+#modelList{position:absolute;top:100%;left:0;right:0;z-index:10;margin:2px 0 0;padding:2px 0;list-style:none;background:var(--vscode-dropdown-background,var(--vscode-input-background));color:var(--vscode-dropdown-foreground,var(--vscode-input-foreground));border:1px solid var(--vscode-dropdown-border,var(--vscode-focusBorder));border-radius:3px;box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.3))}
+#modelList li{padding:4px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#modelList li:hover{background:var(--vscode-list-hoverBackground)}
+#modelList li.active{background:var(--vscode-list-activeSelectionBackground);color:var(--vscode-list-activeSelectionForeground)}

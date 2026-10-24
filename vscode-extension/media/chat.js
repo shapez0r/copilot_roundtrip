@@ -23,10 +23,24 @@
   function makeRow(kind,badge,label,content,index){
     const row=document.createElement('div');row.className='result-row '+kind;row.style.animationDelay=Math.min(index,20)*40+'ms';
     row.title=label;
+    const icon=span('result-icon '+kind,badge);icon.setAttribute('aria-hidden','true');row.append(icon);
     for(const part of content) row.append(part);
     return row;
   }
   function span(cls,text){const s=document.createElement('span');s.className=cls;s.textContent=text;return s;}
+  // Compact green/red squares: at most 5 per file however large the change (e.g. 1000+/100-).
+  const BAR_BOXES=5;
+  function diffBar(count,plus,minus){
+    const total=parseInt(count,10), graph=plus+minus;
+    if(!(total>0)||!graph) return null;
+    const filled=Math.min(BAR_BOXES,total);
+    let adds=Math.round(filled*plus/graph), dels=filled-adds;
+    if(filled>1&&plus&&!adds){adds=1;dels--;}
+    if(filled>1&&minus&&!dels){dels=1;adds--;}
+    const bar=document.createElement('span');bar.className='result-bar';bar.setAttribute('aria-hidden','true');
+    for(let k=0;k<BAR_BOXES;k++){const b=document.createElement('span');b.className=k<adds?'bar-add':k<adds+dels?'bar-del':'bar-none';bar.append(b);}
+    return bar;
+  }
   function section(title,label){
     const s=document.createElement('section');s.className='result-section';s.setAttribute('aria-label',label);
     const h=document.createElement('strong');h.textContent=title;s.append(h);
@@ -42,7 +56,7 @@
       if(!m){summary=line.trim();continue;}
       const graph=m[3]||'', plus=(graph.match(/\+/g)||[]).length, minus=(graph.match(/-/g)||[]).length;
       const kind=plus&&!minus?'added':minus&&!plus?'deleted':'modified';
-      list.append(makeRow(kind,kind==='added'?'+':kind==='deleted'?'\u2212':'~',kind==='added'?'Insertions':kind==='deleted'?'Deletions':'Insertions and deletions',[span('result-path',m[1]),span('result-count',m[2])],i++));
+      list.append(makeRow(kind,kind==='added'?'+':kind==='deleted'?'\u2212':'~',kind==='added'?'Insertions':kind==='deleted'?'Deletions':'Insertions and deletions',[span('result-path',m[1]),span('result-count',m[2]),diffBar(m[2],plus,minus)].filter(Boolean),i++));
     }
     if(!i) list.append(makeRow('neutral','\u2713','No changes',[span('result-path','No tracked file changes.')],0));
     if(summary){
@@ -81,13 +95,42 @@
     if(m.type==='loginActive'){$('finishLogin').hidden=!m.value;$('login').disabled=m.value;activity.login=!!m.value;renderActivity();}
       if(m.type==='showBrowser' && !$('showBrowser').dataset.initialized){$('showBrowser').checked=!!m.value;$('showBrowser').dataset.initialized='true';}
       if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);}
-    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();$('send').disabled=m.value;$('cancel').disabled=!m.value;repo.disabled=m.value;prompt.disabled=m.value;$('model').disabled=m.value;$('showBrowser').disabled=m.value;}
+    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();$('send').disabled=m.value;$('cancel').disabled=!m.value;repo.disabled=m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
       activity.message=last?last.message:'';renderActivity();
     }
     if(m.type==='error'){activity.message=m.text;renderActivity();}
   });
+    // Editable model combobox: pick a preset from the dropdown or type any provider/model.
+    const modelInput=$('model'), modelList=$('modelList'), modelToggle=$('modelToggle'), modelCombo=$('modelCombo');
+    const modelOptions=[...modelList.querySelectorAll('[role="option"]')];
+    let activeOption=-1;
+    function highlightModel(){
+      modelOptions.forEach((o,k)=>{o.classList.toggle('active',k===activeOption);o.setAttribute('aria-selected',String(o.dataset.value===modelInput.value.trim()));});
+      if(activeOption>=0) modelInput.setAttribute('aria-activedescendant',modelOptions[activeOption].id); else modelInput.removeAttribute('aria-activedescendant');
+    }
+    function setModelOpen(open){
+      if(open&&modelInput.disabled) return;
+      modelList.hidden=!open;modelInput.setAttribute('aria-expanded',String(open));modelToggle.setAttribute('aria-expanded',String(open));
+      activeOption=open?modelOptions.findIndex(o=>o.dataset.value===modelInput.value.trim()):-1;
+      highlightModel();
+    }
+    function chooseModel(o){modelInput.value=o.dataset.value;setModelOpen(false);modelInput.focus();}
+    modelToggle.addEventListener('click',()=>{setModelOpen(modelList.hidden);modelInput.focus();});
+    modelOptions.forEach(o=>{o.addEventListener('mousedown',e=>e.preventDefault());o.addEventListener('click',()=>chooseModel(o));});
+    modelInput.addEventListener('keydown',e=>{
+      const open=!modelList.hidden;
+      if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+        e.preventDefault();
+        if(!open){setModelOpen(true);return;}
+        const n=modelOptions.length;activeOption=e.key==='ArrowDown'?(activeOption+1)%n:(activeOption<=0?n-1:activeOption-1);highlightModel();
+      } else if(e.key==='Enter'&&open&&activeOption>=0){e.preventDefault();chooseModel(modelOptions[activeOption]);}
+      else if(e.key==='Escape'&&open){e.preventDefault();setModelOpen(false);}
+    });
+    modelInput.addEventListener('input',()=>{if(!modelList.hidden)highlightModel();});
+    modelCombo.addEventListener('focusout',e=>{if(!modelCombo.contains(e.relatedTarget))setModelOpen(false);});
+    document.addEventListener('mousedown',e=>{if(!modelCombo.contains(e.target))setModelOpen(false);});
   form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim()||!repo.value)return;vscode.postMessage({type:'run',prompt:prompt.value,repo:repo.value,model:$('model').value,showBrowser:$('showBrowser').checked});prompt.value='';});
   $('cancel').addEventListener('click',()=>vscode.postMessage({type:'cancel'}));
   $('login').addEventListener('click',()=>vscode.postMessage({type:'login'}));
