@@ -3,7 +3,7 @@
 
 .browser-choice{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;font-weight:normal;margin:0}.browser-choice input{margin:0}
 
-#progress{border-top:1px solid var(--vscode-panel-border);padding-top:8px;font-size:12px}#progressItems{margin:6px 0 0;padding-left:22px;max-height:180px;overflow-y:auto}#progressItems li{padding:3px 0;overflow-wrap:anywhere}#progressItems li:last-child{color:var(--vscode-foreground);font-weight:600}
+#progress{border-top:1px solid var(--vscode-panel-border);padding-top:8px;font-size:12px}#activityLine{display:flex;align-items:center;gap:8px;margin-top:6px;min-height:18px;font-weight:600;overflow:hidden}#activityText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}#activityText.rotate{animation:activity-rotate .35s ease-out}.spinner{flex:0 0 auto;width:12px;height:12px;border:2px solid var(--vscode-progressBar-background,var(--vscode-focusBorder));border-right-color:transparent;border-radius:50%;animation:activity-spin .8s linear infinite}.spinner[hidden]{display:none}@keyframes activity-spin{to{transform:rotate(360deg)}}@keyframes activity-rotate{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media (prefers-reduced-motion:reduce){.spinner{animation-duration:2s}#activityText.rotate{animation:none}}
 .header-controls select{width:auto;max-width:155px;min-width:110px;padding:7px 6px;font:inherit}.header-controls select:focus-visible{outline:2px solid var(--vscode-focusBorder)}
 
 /* Keep every control reachable in narrow secondary sidebars. */
