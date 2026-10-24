@@ -225,7 +225,7 @@ def send_with_retry(page, composer, send_selector, timeout_seconds=120):
     raise SystemExit(f"Prompt was not accepted within {timeout_seconds}s after upload")
 
 def select_model(page, model: str, sel):
-    """Select a model through the two-level GPT/OpenAI provider menu."""
+    """Select a model through its provider submenu."""
     import re
     requested = model.strip()
     if requested.lower() == "auto":
@@ -261,8 +261,13 @@ def select_model(page, model: str, sel):
             except Exception: pass
         return node
 
+    is_claude = requested.casefold() == "opus 5.5"
+    provider_name = "Claude/Anthropic" if is_claude else "GPT/OpenAI"
+    patterns = ((r"^Claude\s*$", r"^Anthropic\s*$", r"^Claude\s+Anthropic\s*$",
+                 r"^Anthropic\s+Claude\s*$") if is_claude else
+                (r"^GPT\s*$", r"^OpenAI\s*$", r"^GPT\s+OpenAI\s*$"))
     provider = None
-    for pattern in (r"^GPT\s*$", r"^OpenAI\s*$", r"^GPT\s+OpenAI\s*$"):
+    for pattern in patterns:
         nodes = visible_nodes(pattern)
         if nodes:
             provider = row_for(nodes[-1]); break
@@ -272,14 +277,15 @@ def select_model(page, model: str, sel):
             row = rows.nth(i)
             try:
                 text = " ".join(row.inner_text().split())
-                if re.search(r"\bGPT\b", text, re.I) and re.search(r"\bOpenAI\b", text, re.I):
+                terms = ("Claude", "Anthropic") if is_claude else ("GPT", "OpenAI")
+                if all(re.search(r"\b" + term + r"\b", text, re.I) for term in terms):
                     provider = row; break
             except Exception: pass
     if provider is None:
-        raise SystemExit("GPT/OpenAI provider row not found after opening the model picker.")
+        raise SystemExit(f"{provider_name} provider row not found after opening the model picker.")
 
     box = provider.bounding_box()
-    if not box: raise SystemExit("GPT/OpenAI provider row has no bounding box.")
+    if not box: raise SystemExit(f"{provider_name} provider row has no bounding box.")
     y = box["y"] + box["height"] / 2
     page.mouse.move(box["x"] + box["width"] * .25, y)
     page.wait_for_timeout(300)
@@ -289,7 +295,7 @@ def select_model(page, model: str, sel):
     options = visible_nodes(pattern)
     if not options:
         provider.click(); page.wait_for_timeout(1200); options = visible_nodes(pattern)
-    if not options: raise SystemExit(f"Model {requested!r} was not found in the GPT submenu.")
+    if not options: raise SystemExit(f"Model {requested!r} was not found in the {provider_name} submenu.")
     option = row_for(options[-1])
     if option.get_attribute("aria-disabled") == "true": raise SystemExit(f"Model {requested!r} is disabled.")
     option.click(); page.wait_for_timeout(1000)
