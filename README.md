@@ -61,9 +61,9 @@ The tool requires a clean working tree by default. `--allow-dirty` bypasses this
 3. Opens Copilot Chat, optionally selects the model, uploads the archive, waits for an attachment chip and bounded progress checks, then submits the repair request.
 4. Waits for a downloadable response; if none appears before the timeout, saves a screenshot and HTML diagnostics.
 5. Checks that the download is a ZIP with files, rejects traversal paths, `.git` entries and Unix symlinks, and refuses a byte-identical archive.
-6. Copies existing tracked files to a timestamped backup, then overlays extracted result files onto the worktree. It prints Git status and diff statistics.
+6. Backs up all existing worktree files (including untracked files), clears the worktree except `.git`, then copies the complete extracted repository into place. On an apply failure, it restores the backup. It prints Git status and diff statistics.
 
-**Important limitations:** The overlay does not delete files omitted from the returned ZIP. It may add files from the response. It does not independently verify that Copilot changed only what was requested. Review the diff and new files carefully. Files excluded by `git archive HEAD` are not sent to Copilot.
+**Important:** Files omitted from the returned ZIP are deleted from the worktree; `.git` is preserved. Untracked files are also removed from the worktree (but included in the backup). The backup directory and downloaded ZIP must be outside the repository. It may add files from the response. It does not independently verify that Copilot changed only what was requested. Review the diff and new files carefully. Files excluded by `git archive HEAD` are not sent to Copilot.
 
 ## Review the result
 
@@ -89,7 +89,7 @@ For `fix`, options include:
 - `--repo PATH` — target Git repository (default: current directory).
 - `--model LABEL` — exact visible model label (default: `auto`).
 - `--work-dir PATH` — temporary archives, downloads and diagnostics.
-- `--backup-dir PATH` — location for timestamped tracked-file backups.
+- `--backup-dir PATH` — location for timestamped complete worktree backups.
 - `--timeout SECONDS` — download wait timeout (default: `900`).
 - `--headless` — run Chromium without a visible window (requires an existing signed-in profile).
 - `--allow-dirty` — allow a dirty worktree (use with caution).

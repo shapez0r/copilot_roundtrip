@@ -3,7 +3,7 @@
 
 It archives the Git index (therefore excludes .git and untracked files), uploads the
 ZIP bytes under a .txt filename, sends a repair prompt, waits for a downloaded file,
-validates the returned archive, and overlays it onto the worktree after a backup.
+validates the returned archive, and replaces the worktree after a backup.
 
 UI automation is unsupported and selectors can change. Run `login` once, then `fix`.
 """
@@ -78,34 +78,70 @@ def normalize_download(src: Path, dst_zip: Path):
     return hashlib.sha256(data).hexdigest()
 
 
-def backup_and_overlay(root: Path, result_zip: Path, backup_dir: Path):
-    tracked = run(["git", "ls-files", "-z"], cwd=root).stdout.split("\0")
-    tracked = [x for x in tracked if x]
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    backup = backup_dir / f"{root.name}-{stamp}"
-    backup.mkdir(parents=True, exist_ok=False)
-    for rel in tracked:
-        src = root / rel
-        if src.exists() and src.is_file():
-            dst = backup / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
+def backup_and_replace(root: Path, result_zip: Path, backup_dir: Path):
+    """Replace the entire worktree snapshot, preserving Git metadata.
+
+    Extract and validate before touching the repository. Back up every existing
+    non-.git entry (including untracked files), and restore on apply failure.
+    """
+    root = root.resolve()
+    backup_dir = backup_dir.resolve()
+    if backup_dir == root or root in backup_dir.parents:
+        raise SystemExit("Backup directory must be outside the repository")
+    if result_zip.resolve() == root or root in result_zip.resolve().parents:
+        raise SystemExit("Result ZIP must be outside the repository")
+
+    def copy_entry(src: Path, dst: Path):
+        if src.is_symlink():
+            dst.symlink_to(os.readlink(src), target_is_directory=src.is_dir())
+        elif src.is_dir():
+            shutil.copytree(src, dst, symlinks=True)
+        else:
             shutil.copy2(src, dst)
+
+    def clear_worktree():
+        for child in root.iterdir():
+            if child.name == ".git":
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+
     with tempfile.TemporaryDirectory(prefix="copilot-extract-") as td:
         stage = Path(td)
         with zipfile.ZipFile(result_zip) as z:
             members = safe_members(z)
             z.extractall(stage, members)
-        # Flatten one wrapper directory if Copilot created one.
         children = list(stage.iterdir())
         source = children[0] if len(children) == 1 and children[0].is_dir() else stage
-        for p in source.rglob("*"):
-            if p.is_file():
-                rel = p.relative_to(source)
-                dst = root / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(p, dst)
-    return backup
+        if not any(p.is_file() for p in source.rglob("*")):
+            raise SystemExit("Returned repository contains no files")
+        if (source / ".git").exists():
+            raise SystemExit("Returned repository contains .git")
 
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = backup_dir / f"{root.name}-{stamp}-{time.time_ns()}"
+        backup.mkdir()
+        try:
+            for child in root.iterdir():
+                if child.name != ".git":
+                    copy_entry(child, backup / child.name)
+        except Exception:
+            shutil.rmtree(backup)
+            raise
+
+        try:
+            clear_worktree()
+            for child in source.iterdir():
+                copy_entry(child, root / child.name)
+        except Exception:
+            clear_worktree()
+            for child in backup.iterdir():
+                copy_entry(child, root / child.name)
+            raise
+    return backup
 
 def selectors_from_env():
     return {
@@ -315,7 +351,7 @@ def cmd_fix(args):
     result_hash = normalize_download(downloaded, result_zip)
     if result_hash == source_hash:
         raise SystemExit("Copilot returned a byte-identical archive; refusing to apply as no fix was detected.")
-    backup = backup_and_overlay(root, result_zip, Path(args.backup_dir).expanduser().resolve())
+    backup = backup_and_replace(root, result_zip, Path(args.backup_dir).expanduser().resolve())
     diff = run(["git", "diff", "--stat"], cwd=root).stdout
     status = run(["git", "status", "--short"], cwd=root).stdout
     print(json.dumps({"repo": str(root), "source_files": count, "result": str(result_zip),

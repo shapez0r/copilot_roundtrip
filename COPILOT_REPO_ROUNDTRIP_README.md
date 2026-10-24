@@ -61,7 +61,7 @@ This prevents the prompt from being sent before the attachment upload completes.
 
 ## Output and safety
 
-The tool creates the source payload with `git archive HEAD`, so `.git` and untracked files are excluded. It validates the returned ZIP, rejects traversal paths and symlinks, backs up existing tracked files, overlays the returned files, and prints `git status` plus `git diff --stat`. It does not commit or push.
+The tool creates the source payload with `git archive HEAD`, so `.git` and untracked files are excluded. It validates the returned ZIP, rejects traversal paths and symlinks, backs up the complete worktree, clears everything except `.git`, installs the returned repository (including deletions), and prints `git status` plus `git diff --stat`. It does not commit or push.
 
 Review every result:
 
