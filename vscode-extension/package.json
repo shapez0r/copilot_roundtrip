@@ -1,0 +1,27 @@
+{
+  "name": "copilot-repo-roundtrip", "displayName": "Copilot Repo Round-Trip",
+  "description": "Prompt-driven whole-repository modifications using the existing Copilot browser round-trip script.",
+  "version": "0.1.0", "publisher": "local-roundtrip", "private": true,
+  "engines": {"vscode": "^1.85.0"}, "main": "./extension.js",
+  "activationEvents": ["onView:copilotRoundtrip.chat"],
+  "contributes": {
+    "viewsContainers": {"activitybar": [{"id":"copilotRoundtrip", "title":"Repo Round-Trip", "icon":"media/icon.svg"}]},
+    "views": {"copilotRoundtrip": [{"id":"copilotRoundtrip.chat", "name":"Repository Chat", "type":"webview"}]},
+    "commands": [
+      {"command":"copilotRoundtrip.login", "title":"Repo Round-Trip: Sign In"},
+      {"command":"copilotRoundtrip.open", "title":"Repo Round-Trip: Open Chat"}
+    ],
+    "configuration": {"title":"Repo Round-Trip", "properties": {
+      "copilotRoundtrip.pythonPath": {"type":"string","default":"python","description":"Python executable with Playwright installed (use py on Windows if preferred)."},
+      "copilotRoundtrip.model": {"type":"string","default":"auto","description":"Copilot model label, or auto."},
+      "copilotRoundtrip.timeout": {"type":"integer","default":900,"minimum":1,"description":"Seconds to wait for Copilot download."},
+      "copilotRoundtrip.headless": {"type":"boolean","default":false,"description":"Run browser invisibly after signing in."},
+      "copilotRoundtrip.allowDirty": {"type":"boolean","default":false,"description":"Allow dirty working tree; snapshot still uses HEAD only."},
+      "copilotRoundtrip.profilePath": {"type":"string","default":"","description":"Optional browser profile path (blank uses Python script default)."},
+      "copilotRoundtrip.workDir": {"type":"string","default":"","description":"Optional download and diagnostic directory outside the target repository."},
+      "copilotRoundtrip.backupDir": {"type":"string","default":"","description":"Optional backup directory outside the target repository."}
+    }}
+  },
+  "scripts": {"test":"node --test test/*.test.js", "package":"npx @vscode/vsce package --no-dependencies"},
+  "files": ["extension.js","media/**","scripts/**","README.md","package.json"]
+}
