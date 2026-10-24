@@ -12,6 +12,14 @@ function parseResult(output) {
     throw new Error('The round-trip script did not return valid JSON. See the output panel for details.');
   }
 }
+const STATUS_PREFIX = 'ROUNDTRIP_STATUS:';
+function parseStatusLine(line) {
+  if (!line.startsWith(STATUS_PREFIX)) return null;
+  try {
+    const value = JSON.parse(line.slice(STATUS_PREFIX.length));
+    return typeof value.message === 'string' && typeof value.stage === 'string' ? value : null;
+  } catch (_) { return null; }
+}
 function buildArgs(script, request, repo, cfg) {
   const args = [script];
   if (cfg.profilePath) args.push('--profile', cfg.profilePath);
@@ -74,7 +82,7 @@ async function ensureRuntime(context, cfg, output) {
 }
 
 class ChatProvider {
-  constructor(context, output) { this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; }
+  constructor(context, output) { this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; }
   resolveWebviewView(view) {
     this.view=view;
     const w=view.webview;
@@ -82,7 +90,7 @@ class ChatProvider {
     const n=nonce();
     const css=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.css'));
     const js=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.js'));
-    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><input id="model" type="text" value="auto" placeholder="auto or GPT-6" spellcheck="false" title="Exact Copilot model label; auto keeps the current model"><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button></div></header><p class="hint">Prompts modify the selected Git repository using Copilot Chat. No inline code suggestions.</p><label for="repo">Repository</label><select id="repo"></select><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes..." required></textarea><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><p id="status" role="status"></p></main><script nonce="${n}" src="${js}"></script></body></html>`;
+    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><input id="model" type="text" value="auto" placeholder="auto or GPT-6" spellcheck="false" title="Exact Copilot model label; auto keeps the current model"><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button></div></header><p class="hint">Prompts modify the selected Git repository using Copilot Chat. No inline code suggestions.</p><label for="repo">Repository</label><select id="repo"></select><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes..." required></textarea><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><p id="status" role="status"></p><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><ol id="progressItems" aria-live="polite"></ol></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
     w.onDidReceiveMessage(async m=>{
       if(m.type==='ready') this.refresh();
       if(m.type==='login') await vscode.commands.executeCommand('copilotRoundtrip.login');
@@ -96,7 +104,7 @@ class ChatProvider {
   refresh() {
     const folders=(vscode.workspace.workspaceFolders||[]).filter(f=>f.uri.scheme==='file').map(f=>({name:f.name,path:f.uri.fsPath}));
     this.post({type:'repos',folders}); this.post({type:'busy',value:this.busy});
-    this.post({type:'history',items:this.history}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser});
+    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser});
   }
   async openResult(p) {
     // Only open ZIPs emitted by successful runs, never arbitrary paths from the webview.
@@ -104,7 +112,7 @@ class ChatProvider {
     if(!fs.existsSync(p)) { vscode.window.showErrorMessage('Result archive no longer exists.'); return; }
     await vscode.env.openExternal(vscode.Uri.file(p));
   }
-  cancel() { if(this.proc && !this.proc.killed) { this.proc.kill(); this.post({type:'status',text:'Stopping the script...'}); } }
+  cancel() { if(this.proc && !this.proc.killed) { this.proc.kill(); this.updateProgress('cancelled','Stopping the script...'); } }
   async run(prompt, repo, model, showBrowser) {
     if(this.busy) return;
     if(typeof prompt!=='string' || !prompt.trim()) { this.post({type:'error',text:'Enter a prompt first.'}); return; }
@@ -118,14 +126,14 @@ class ChatProvider {
       `Upload the committed snapshot of ${repo} to Copilot and replace its working files with the returned archive? Review the script's backup and deletion behavior before continuing.`,
       {modal:true}, 'Modify repository');
     if(choice!=='Modify repository') return;
-    this.busy=true; this.post({type:'busy',value:true}); this.post({type:'status',text:'Running Copilot repository round-trip...'});
+    this.busy=true; this.statusHistory=[]; this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
     this.post({type:'message',item:{role:'user',text:prompt}});
     this.output.show(true);
     this.output.appendLine(`\n=== Repository: ${repo} ===\nRequest: ${prompt}\n`);
     const args=buildArgs(script,prompt.trim(),repo,cfg);
     let stdout='',stderr='', cancelled=false;
     try {
-      this.post({type:'status',text:'Checking Python and Playwright...'});
+      this.updateProgress('setup','Checking Python and Playwright...');
       const python=await ensureRuntime(this.context,cfg,this.output);
       await new Promise((resolve,reject)=>{
         const child=cp.spawn(python,args,{cwd:repo,windowsHide:false,env:process.env});
@@ -140,13 +148,13 @@ class ChatProvider {
       const item={role:'assistant',text:lines.join('\n\n')};
       this.history.push({role:'user',text:prompt},{...item});
       this.post({type:'message',item});
-      this.post({type:'status',text:'Completed. Review the Git diff and result archive.'});
+      this.updateProgress('completed','Completed. Review the Git diff.');
       vscode.window.showInformationMessage('Repository round-trip completed. Review your changes.');
     } catch(e) {
       const msg=String(e.message||e);
       this.history.push({role:'user',text:prompt},{role:'error',text:msg});
       this.post({type:'message',item:{role:'error',text:msg}});
-      this.post({type:'status',text:'Run failed. See the output panel.'});
+      this.updateProgress('failed','Run failed. See the output panel.');
     } finally {this.proc=null;this.busy=false;this.post({type:'busy',value:false});}
   }
 }
@@ -171,4 +179,4 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(()=>provider.refresh()));
 }
 function deactivate() {}
-module.exports={activate,deactivate,parseResult,buildArgs};
+module.exports={activate,deactivate,parseResult,parseStatusLine,buildArgs};

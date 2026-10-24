@@ -27,3 +27,5 @@ A sidebar prompt-and-response interface for the repository-wide `copilot_repo_ro
 Round-trip upload names use local timestamps such as `repo-20261024-191212.zip.txt`. Temporary source ZIPs, downloaded files and rollback backups are deleted when the run finishes (including errors). The applied repository changes remain in the working tree.
 
 The **Show browser** checkbox beside **Sign in** controls subsequent modification runs; it is off by default. The upload can take up to 180 seconds to settle; the send action retries for up to 120 seconds.
+
+During `fix`, the script streams `ROUNDTRIP_STATUS:` JSON lines to stderr for each execution phase (including periodic wait updates); stdout remains the final JSON result. The VS Code sidebar displays these updates live in **Execution activity** and keeps the latest 100 entries visible.

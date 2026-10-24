@@ -20,6 +20,11 @@ BASE_PROMPT = (
 )
 
 
+def emit_status(stage, message):
+    """Line-delimited progress on stderr; stdout remains the final JSON result."""
+    print("ROUNDTRIP_STATUS:" + json.dumps({"stage": stage, "message": message}),
+          file=sys.stderr, flush=True)
+
 def run(cmd, cwd=None, capture=True):
     return subprocess.run(cmd, cwd=cwd, check=True, text=True,
                           stdout=subprocess.PIPE if capture else None,
@@ -335,6 +340,7 @@ def read_chat_response(page):
 
 def cmd_fix(args):
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+    emit_status("checking", "Checking repository and Git working tree...")
     root = repo_root(Path(args.repo).resolve())
     ensure_clean(root, args.allow_dirty)
     profile = Path(args.profile).expanduser().resolve()
@@ -345,22 +351,29 @@ def cmd_fix(args):
         work_parent.mkdir(parents=True, exist_ok=True)
     # All source archives, downloads, diagnostics and rollback copies are temporary.
     # The directory is removed on success, failure, or cancellation via normal unwinding.
+    emit_status("preparing", "Preparing temporary workspace...")
     with tempfile.TemporaryDirectory(prefix="copilot-roundtrip-", dir=work_parent) as temporary_work:
         return run_roundtrip(args, root, profile, Path(temporary_work), sync_playwright, PlaywrightTimeout)
 
 def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout):
     source_txt = work / f"{root.name}-{time.strftime('%Y%m%d-%H%M%S')}.zip.txt"
+    emit_status("archiving", "Creating committed repository archive...")
     source_hash, count = make_archive(root, source_txt)
+    emit_status("archiving", f"Archive ready ({count} entries).")
     prompt = BASE_PROMPT.format(request=args.request.strip())
     sel = selectors_from_env()
     downloaded = None
     chat_response = ""
     with sync_playwright() as p:
+        emit_status("browser", "Launching Copilot browser...")
         ctx = open_context(p, profile, not args.show_browser, work)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        emit_status("browser", "Opening Copilot Chat...")
         page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
+        emit_status("model", "Checking Copilot model selection...")
         select_model(page, args.model, sel)
         # Prefer direct file input; fall back to file chooser triggered by Add/Attach button.
+        emit_status("uploading", "Attaching repository archive...")
         file_input = page.locator(sel["file"]).first
         try:
             file_input.set_input_files(str(source_txt), timeout=15000)
@@ -369,14 +382,22 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 page.get_by_role("button", name=lambda n: bool(n) and ("attach" in n.lower() or "add" in n.lower())).first.click()
             fc.value.set_files(str(source_txt))
         # Do not submit until the upload belongs to this same draft message.
+        emit_status("uploading", "Waiting for attachment upload to finish...")
         wait_for_attachment_ready(page, source_txt)
+        emit_status("prompt", "Preparing modification request...")
         composer = page.locator(sel["composer"]).last
         composer.wait_for(state="visible", timeout=60000)
         composer.fill(prompt)
+        emit_status("prompt", "Submitting request to Copilot...")
         send_with_retry(page, composer, sel["send"])
+        emit_status("waiting", "Waiting for Copilot to generate a downloadable repository...")
         deadline = time.time() + args.timeout
         seen = set()
+        last_update = time.monotonic()
         while time.time() < deadline and downloaded is None:
+            if time.monotonic() - last_update >= 15:
+                emit_status("waiting", f"Still waiting for Copilot response ({int(args.timeout - max(0, deadline - time.time()))}s elapsed)...")
+                last_update = time.monotonic()
             candidates = page.locator(sel["download"])
             for i in range(candidates.count() - 1, -1, -1):
                 node = candidates.nth(i)
@@ -405,12 +426,16 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         chat_response = read_chat_response(page)
         ctx.close()
     result_zip = work / f"{root.name}-modified.zip"
+    emit_status("validating", "Validating downloaded ZIP contents...")
     result_hash = normalize_download(downloaded, result_zip)
     if result_hash == source_hash:
         raise SystemExit("Copilot returned a byte-identical archive; refusing to apply as no fix was detected.")
+    emit_status("applying", "Backing up and applying repository changes...")
     backup = backup_and_replace(root, result_zip, work / "rollback")
+    emit_status("review", "Collecting Git change summary...")
     diff = run(["git", "diff", "--stat"], cwd=root).stdout
     status = run(["git", "status", "--short"], cwd=root).stdout
+    emit_status("completed", "Repository changes applied successfully.")
     print(json.dumps({"repo": str(root), "source_files": count, "result": "",
                       "backup": "", "status": status, "diff_stat": diff,
                       "chat_response": chat_response}, indent=2))
