@@ -47,10 +47,10 @@ python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Add a proper RE
 To request a specific model (its label must match the visible UI):
 
 ```powershell
-python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Add a proper README.md" --repo "C:\path\to\repository" --model "GPT-6"
+python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Add a proper README.md" --repo "C:\path\to\repository" --model "GPT/GPT-6"
 ```
 
-`--model auto` (the default) leaves the currently selected model unchanged. A named model must be available in the account's model menu; otherwise selection fails. Menu layout and model availability may change.
+`--model` accepts only `Claude/Opus 5.5` or `GPT/GPT-6` (the default). The slash separates provider and model; spaces, dots, and dashes in the model name are preserved. The chosen model must be available in the account's model menu; otherwise selection fails. Menu layout and model availability may change.
 
 The tool requires a clean working tree by default. `--allow-dirty` bypasses this check, but the uploaded snapshot is still made from `HEAD`, **not** from uncommitted or untracked changes.
 
@@ -87,7 +87,7 @@ python vscode-extension/scripts/copilot_repo_roundtrip.py [--profile PATH] [--ur
 For `fix`, options include:
 
 - `--repo PATH` — target Git repository (default: current directory).
-- `--model LABEL` — exact visible model label (default: `auto`).
+- `--model LABEL` — provider/model pair: `Claude/Opus 5.5` or `GPT/GPT-6` (default: `GPT/GPT-6`).
 - `--work-dir PATH` — temporary archives, downloads and diagnostics.
 - `--backup-dir PATH` — location for timestamped complete worktree backups.
 - `--timeout SECONDS` — download wait timeout (default: `900`).

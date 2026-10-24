@@ -8,11 +8,11 @@ A sidebar prompt-and-response interface for the repository-wide `copilot_repo_ro
 2. Open `vscode-extension/` in VS Code, press **F5** to launch an Extension Development Host. Alternatively run `npm run package` (requires npm access to download `@vscode/vsce`) and install the resulting `.vsix` using **Extensions: Install from VSIX...**.
 3. In the Extension Development Host, open your target Git repository folder. Select the **Repo Round-Trip** activity-bar icon.
 4. Click **Sign in** (browser visible for interactive authentication), complete browser sign-in, then press Enter in the VS Code terminal.
-5. Enter a model label (for example `GPT-6`) in the **Model** field beside **Sign in**, or leave `auto` to keep the current model. Select the repository, type a prompt, click **Modify repository**, and confirm the warning. The response, Git status and diff summary appear in the chat; detailed logs appear in **Output → Repo Round-Trip**.
+5. Choose `Claude/Opus 5.5` or `GPT/GPT-6` (default) in the **Model** dropdown beside **Sign in**. The slash separates provider from the exact UI model name. Select the repository, type a prompt, click **Modify repository**, and confirm the warning. The response, Git status and diff summary appear in the chat; detailed logs appear in **Output → Repo Round-Trip**.
 
 ## Settings
 
-`copilotRoundtrip.pythonPath` (default `python`, used to create the managed virtual environment), `model` (`auto`), `timeout` (900 seconds), `headless`, `allowDirty`, `profilePath`, `workDir`, `backupDir` are exposed under **Settings → Repo Round-Trip**. For Windows, point `pythonPath` to a Python executable if `python` is not on PATH. The profile, work and backup paths should remain outside the target repo.
+`copilotRoundtrip.pythonPath` (default `python`, used to create the managed virtual environment), `model` (`GPT/GPT-6`), `timeout` (900 seconds), `headless`, `allowDirty`, `profilePath`, `workDir`, `backupDir` are exposed under **Settings → Repo Round-Trip**. For Windows, point `pythonPath` to a Python executable if `python` is not on PATH. The profile, work and backup paths should remain outside the target repo.
 
 ## Important limitations
 

@@ -4,3 +4,4 @@
 .browser-choice{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;font-weight:normal;margin:0}.browser-choice input{margin:0}
 
 #progress{border-top:1px solid var(--vscode-panel-border);padding-top:8px;font-size:12px}#progressItems{margin:6px 0 0;padding-left:22px;max-height:180px;overflow-y:auto}#progressItems li{padding:3px 0;overflow-wrap:anywhere}#progressItems li:last-child{color:var(--vscode-foreground);font-weight:600}
+.header-controls select{width:auto;max-width:155px;min-width:110px;padding:7px 6px;font:inherit}.header-controls select:focus-visible{outline:2px solid var(--vscode-focusBorder)}

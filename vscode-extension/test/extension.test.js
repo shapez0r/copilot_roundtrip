@@ -3,3 +3,5 @@ const test=require('node:test');const assert=require('node:assert/strict');const
 const {parseStatusLine}=require('../extension');
 test('structured status is parsed',()=>assert.deepEqual(parseStatusLine('ROUNDTRIP_STATUS:{"stage":"uploading","message":"Uploading..."}'),{stage:'uploading',message:'Uploading...'}));
 test('non-status and malformed lines are ignored',()=>{assert.equal(parseStatusLine('warning'),null);assert.equal(parseStatusLine('ROUNDTRIP_STATUS:{'),null)});
+
+test('model selection preserves provider/model slash',()=>{const a=buildArgs('/script.py','fix','/repo',{model:'Claude/Opus 5.5',timeout:900});assert.equal(a[a.indexOf('--model')+1],'Claude/Opus 5.5')});
