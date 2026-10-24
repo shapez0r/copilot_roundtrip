@@ -91,7 +91,7 @@ class ChatProvider {
     const n=nonce();
     const css=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.css'));
     const js=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.js'));
-    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" title="Enter provider/model, e.g. GPT/GPT-6"><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the selected Git repository using Copilot Chat. No inline code suggestions.</p><label for="repo">Repository</label><select id="repo"></select><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes..." required></textarea><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><p id="status" role="status"></p><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
+    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" title="Enter provider/model, e.g. GPT/GPT-6"><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the selected Git repository using Copilot Chat. No inline code suggestions.</p><label for="repo">Repository</label><select id="repo"></select><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes..." required></textarea><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
     w.onDidReceiveMessage(async m=>{
       if(m.type==='ready') this.refresh();
       if(m.type==='login') await vscode.commands.executeCommand('copilotRoundtrip.login');
@@ -118,7 +118,6 @@ class ChatProvider {
     this.currentStatus = message;
     this.statusHistory.push({stage, message});
     if (this.statusHistory.length > 100) this.statusHistory.shift();
-    this.post({type:'status', text:message});
     this.post({type:'progressHistory', items:this.statusHistory});
   }
   finishLogin() { if(this.loginProc && this.loginProc.stdin.writable) { this.updateProgress('login','Finishing browser sign-in...'); this.loginProc.stdin.write('\n'); } }
@@ -160,8 +159,7 @@ class ChatProvider {
         child.on('close',(code,signal)=>{if(statusBuffer.trim()){const last=parseStatusLine(statusBuffer);this.updateProgress(last?.stage||'log',last?.message||statusBuffer.trim());}cancelled=signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
       });
       const result=parseResult(stdout);
-      const lines=[result.chat_response || 'Repository modification completed.',result.diff_stat && `Changes:\n${result.diff_stat}`,result.status && `Git status:\n${result.status}`,].filter(Boolean);
-      const item={role:'assistant',text:lines.join('\n\n')};
+      const item={role:'assistant',text:result.chat_response || 'Repository modification completed.',diffStat:result.diff_stat || '',gitStatus:result.status || ''};
       this.history.push({role:'user',text:prompt},{...item});
       this.post({type:'message',item});
       this.updateProgress('completed','Completed. Review the Git diff.');

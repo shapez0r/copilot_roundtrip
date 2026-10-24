@@ -15,3 +15,17 @@ header{display:flex;flex-direction:column;align-items:stretch;gap:8px}
 .header-controls [hidden]{display:none}
 
 .browser-choice input[type="checkbox"]{width:auto;min-width:0}
+/* Changes / Git status sections: same visual language as Execution activity. */
+.result-section{border-top:1px solid var(--vscode-panel-border);padding-top:8px;font-size:12px;--rt-add:var(--vscode-gitDecoration-addedResourceForeground,#81b88b);--rt-del:var(--vscode-gitDecoration-deletedResourceForeground,#c74e39);--rt-mod:var(--vscode-gitDecoration-modifiedResourceForeground,#e2c08d)}
+.result-list{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+.result-row{display:flex;align-items:center;gap:8px;min-height:18px;font-weight:600;overflow:hidden;opacity:0;animation:activity-rotate .35s ease-out forwards}
+.result-icon{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:2px solid currentColor;border-radius:50%;font-size:9px;line-height:1;font-weight:700;animation:result-pop .45s ease-out}
+.result-icon.added{color:var(--rt-add)}.result-icon.deleted{color:var(--rt-del)}.result-icon.modified{color:var(--rt-mod)}.result-icon.neutral{color:var(--vscode-descriptionForeground,inherit)}
+.result-path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.result-row.added .result-path{color:var(--rt-add)}.result-row.deleted .result-path{color:var(--rt-del)}.result-row.modified .result-path{color:var(--rt-mod)}
+.result-count,.result-code{flex:0 0 auto;opacity:.8;font-family:var(--vscode-editor-font-family,monospace);font-weight:normal}
+.result-bar{flex:0 0 auto;display:inline-flex;gap:1px}.result-bar span{width:6px;height:8px;border-radius:1px;transform-origin:left;animation:result-grow .4s ease-out}.bar-add{background:var(--rt-add)}.bar-del{background:var(--rt-del)}
+.result-summary{margin-top:6px;opacity:.85}.sum-add{color:var(--rt-add)}.sum-del{color:var(--rt-del)}
+@keyframes result-pop{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.15);opacity:1}100%{transform:scale(1)}}
+@keyframes result-grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@media (prefers-reduced-motion:reduce){.result-row{animation:none;opacity:1}.result-icon,.result-bar span{animation:none}}
