@@ -4,7 +4,7 @@ A sidebar prompt-and-response interface for the repository-wide `copilot_repo_ro
 
 ## Install / run
 
-1. Install Python 3.9+, Git, Playwright (`python -m pip install playwright`) and Chromium (`python -m playwright install chromium`).
+1. Install Python 3.9+ and Git. On first **Sign in** or **Modify repository**, the extension automatically creates a private Python virtual environment in VS Code extension global storage, installs Playwright and its Chromium browser, and reuses that environment for subsequent runs. Internet access is required for the first setup.
 2. Open `vscode-extension/` in VS Code, press **F5** to launch an Extension Development Host. Alternatively run `npm run package` (requires npm access to download `@vscode/vsce`) and install the resulting `.vsix` using **Extensions: Install from VSIX...**.
 3. In the Extension Development Host, open your target Git repository folder. Select the **Repo Round-Trip** activity-bar icon.
 4. Click **Sign in**, complete browser sign-in, then press Enter in the VS Code terminal.
@@ -12,7 +12,7 @@ A sidebar prompt-and-response interface for the repository-wide `copilot_repo_ro
 
 ## Settings
 
-`copilotRoundtrip.pythonPath` (default `python`), `model` (`auto`), `timeout` (900 seconds), `headless`, `allowDirty`, `profilePath`, `workDir`, `backupDir` are exposed under **Settings → Repo Round-Trip**. For Windows, point `pythonPath` to a Python executable if `python` is not on PATH. The profile, work and backup paths should remain outside the target repo.
+`copilotRoundtrip.pythonPath` (default `python`, used to create the managed virtual environment), `model` (`auto`), `timeout` (900 seconds), `headless`, `allowDirty`, `profilePath`, `workDir`, `backupDir` are exposed under **Settings → Repo Round-Trip**. For Windows, point `pythonPath` to a Python executable if `python` is not on PATH. The profile, work and backup paths should remain outside the target repo.
 
 ## Important limitations
 

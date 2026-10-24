@@ -29,6 +29,50 @@ function config() {
     workDir:c.get('workDir',''), backupDir:c.get('backupDir','')};
 }
 function nonce() { return crypto.randomBytes(16).toString('hex'); }
+// Keep Playwright out of the system Python and outside the installed VSIX.
+// Both Sign in and Modify repository use this same managed interpreter.
+let runtimeSetup;
+function runSetup(executable, args, output) {
+  return new Promise((resolve, reject) => {
+    output.appendLine(`> ${executable} ${args.join(' ')}`);
+    const child = cp.spawn(executable, args, {windowsHide:true});
+    let errors = '';
+    child.stdout.on('data', data => output.append(data.toString()));
+    child.stderr.on('data', data => { const text=data.toString(); errors+=text; output.append(text); });
+    child.on('error', reject);
+    child.on('close', code => code === 0 ? resolve() : reject(new Error(`Python setup failed (exit ${code}). ${errors.trim()}`)));
+  });
+}
+async function ensureRuntime(context, cfg, output) {
+  if (runtimeSetup) return runtimeSetup;
+  runtimeSetup = (async () => {
+    const folder = path.join(context.globalStorageUri.fsPath, 'python-runtime');
+    const python = path.join(folder, process.platform === 'win32' ? 'Scripts' : 'bin',
+      process.platform === 'win32' ? 'python.exe' : 'python');
+    const marker = path.join(folder, '.playwright-ready');
+    if (!fs.existsSync(python)) {
+      fs.mkdirSync(path.dirname(folder), {recursive:true});
+      await runSetup(cfg.pythonPath, ['-m', 'venv', folder], output);
+    }
+    // A missing module or interrupted setup must be repaired before launching.
+    let installed = false;
+    try {
+      await runSetup(python, ['-c', 'import playwright.sync_api'], output);
+      installed = true;
+    } catch (_) { /* install below */ }
+    if (!installed) {
+      await runSetup(python, ['-m', 'pip', 'install', 'playwright'], output);
+    }
+    if (!fs.existsSync(marker)) {
+      await runSetup(python, ['-m', 'playwright', 'install', 'chromium'], output);
+      fs.writeFileSync(marker, 'ready\n');
+    }
+    return python;
+  })();
+  try { return await runtimeSetup; }
+  finally { runtimeSetup = undefined; }
+}
+
 class ChatProvider {
   constructor(context, output) { this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; }
   resolveWebviewView(view) {
@@ -79,8 +123,10 @@ class ChatProvider {
     const args=buildArgs(script,prompt.trim(),repo,cfg);
     let stdout='',stderr='', cancelled=false;
     try {
+      this.post({type:'status',text:'Checking Python and Playwright...'});
+      const python=await ensureRuntime(this.context,cfg,this.output);
       await new Promise((resolve,reject)=>{
-        const child=cp.spawn(cfg.pythonPath,args,{cwd:repo,windowsHide:false,env:process.env});
+        const child=cp.spawn(python,args,{cwd:repo,windowsHide:false,env:process.env});
         this.proc=child;
         child.stdout.on('data',chunk=>{const s=chunk.toString();stdout+=s;this.output.append(s);});
         child.stderr.on('data',chunk=>{const s=chunk.toString();stderr+=s;this.output.append(s);});
@@ -107,13 +153,17 @@ function activate(context) {
   const provider=new ChatProvider(context,output);
   context.subscriptions.push(output,vscode.window.registerWebviewViewProvider('copilotRoundtrip.chat',provider,{webviewOptions:{retainContextWhenHidden:true}}));
   context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.open',()=>vscode.commands.executeCommand('workbench.view.extension.copilotRoundtrip')));
-  context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.login',()=>{
+  context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.login',async ()=>{
     const cfg=config(),script=path.join(context.extensionPath,'scripts','copilot_repo_roundtrip.py');
+    output.show(true);
+    let python;
+    try { python=await ensureRuntime(context,cfg,output); }
+    catch(e) { vscode.window.showErrorMessage('Playwright setup failed: '+String(e.message||e)); return; }
     const term=vscode.window.createTerminal(process.platform==='win32' ? {name:'Repo Round-Trip Sign In',shellPath:'powershell.exe'} : {name:'Repo Round-Trip Sign In'});
     // Use PowerShell on Windows and its call operator for quoted executable paths.
     const quote=process.platform==='win32' ? s=>'"'+s.replace(/"/g,'""')+'"' : s=>"'"+s.replace(/'/g,"'\\''")+"'";
     const args=[script]; if(cfg.profilePath) args.push('--profile',cfg.profilePath); args.push('login');
-    term.show(); term.sendText((process.platform==='win32' ? '& ' : '')+[cfg.pythonPath,...args].map(quote).join(' '));
+    term.show(); term.sendText((process.platform==='win32' ? '& ' : '')+[python,...args].map(quote).join(' '));
     vscode.window.showInformationMessage('Sign in using the opened Chromium window, then press Enter in the terminal.');
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(()=>provider.refresh()));
