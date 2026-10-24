@@ -109,11 +109,11 @@ function activate(context) {
   context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.open',()=>vscode.commands.executeCommand('workbench.view.extension.copilotRoundtrip')));
   context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.login',()=>{
     const cfg=config(),script=path.join(context.extensionPath,'scripts','copilot_repo_roundtrip.py');
-    const term=vscode.window.createTerminal({name:'Repo Round-Trip Sign In'});
-    // Use shell quoting for the platform's default shell; do not interpolate untrusted prompt text.
+    const term=vscode.window.createTerminal(process.platform==='win32' ? {name:'Repo Round-Trip Sign In',shellPath:'powershell.exe'} : {name:'Repo Round-Trip Sign In'});
+    // Use PowerShell on Windows and its call operator for quoted executable paths.
     const quote=process.platform==='win32' ? s=>'"'+s.replace(/"/g,'""')+'"' : s=>"'"+s.replace(/'/g,"'\\''")+"'";
     const args=[script]; if(cfg.profilePath) args.push('--profile',cfg.profilePath); args.push('login');
-    term.show(); term.sendText([cfg.pythonPath,...args].map(quote).join(' '));
+    term.show(); term.sendText((process.platform==='win32' ? '& ' : '')+[cfg.pythonPath,...args].map(quote).join(' '));
     vscode.window.showInformationMessage('Sign in using the opened Chromium window, then press Enter in the terminal.');
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(()=>provider.refresh()));
