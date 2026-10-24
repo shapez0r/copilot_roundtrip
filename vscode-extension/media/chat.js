@@ -7,7 +7,6 @@
     const heading=document.createElement('strong');heading.textContent=item.role==='user'?'You':item.role==='error'?'Error':'Copilot response';
     const text=document.createElement('pre');text.textContent=item.text||'';
     card.append(heading,text);
-    if(item.result){const b=document.createElement('button');b.type='button';b.textContent='Open modified ZIP';b.addEventListener('click',()=>vscode.postMessage({type:'openResult',path:item.result}));card.append(b);}
     messages.append(card);messages.scrollTop=messages.scrollHeight;
   }
   window.addEventListener('message',e=>{

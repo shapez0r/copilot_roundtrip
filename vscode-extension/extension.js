@@ -135,8 +135,8 @@ class ChatProvider {
         child.on('close',(code,signal)=>{cancelled=signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
       });
       const result=parseResult(stdout);
-      const lines=[result.chat_response || 'Repository modification completed.',result.diff_stat && `Changes:\n${result.diff_stat}`,result.status && `Git status:\n${result.status}`,result.result && `Result ZIP: ${result.result}`,result.backup && `Backup: ${result.backup}`].filter(Boolean);
-      const item={role:'assistant',text:lines.join('\n\n'),result:result.result || ''};
+      const lines=[result.chat_response || 'Repository modification completed.',result.diff_stat && `Changes:\n${result.diff_stat}`,result.status && `Git status:\n${result.status}`,].filter(Boolean);
+      const item={role:'assistant',text:lines.join('\n\n')};
       this.history.push({role:'user',text:prompt},{...item});
       this.post({type:'message',item});
       this.post({type:'status',text:'Completed. Review the Git diff and result archive.'});

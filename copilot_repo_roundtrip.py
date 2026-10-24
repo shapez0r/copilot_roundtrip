@@ -313,8 +313,16 @@ def cmd_fix(args):
     profile = Path(args.profile).expanduser().resolve()
     if not profile.exists():
         raise SystemExit("Browser profile missing. Run the login command first.")
-    work = Path(args.work_dir).expanduser().resolve(); work.mkdir(parents=True, exist_ok=True)
-    source_txt = work / f"{root.name}-{int(time.time())}.zip.txt"
+    work_parent = Path(args.work_dir).expanduser().resolve() if args.work_dir else None
+    if work_parent is not None:
+        work_parent.mkdir(parents=True, exist_ok=True)
+    # All source archives, downloads, diagnostics and rollback copies are temporary.
+    # The directory is removed on success, failure, or cancellation via normal unwinding.
+    with tempfile.TemporaryDirectory(prefix="copilot-roundtrip-", dir=work_parent) as temporary_work:
+        return run_roundtrip(args, root, profile, Path(temporary_work), sync_playwright, PlaywrightTimeout)
+
+def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout):
+    source_txt = work / f"{root.name}-{time.strftime('%Y%m%d-%H%M%S')}.zip.txt"
     source_hash, count = make_archive(root, source_txt)
     prompt = BASE_PROMPT.format(request=args.request.strip())
     sel = selectors_from_env()
@@ -369,18 +377,18 @@ def cmd_fix(args):
             page.screenshot(path=str(work / "copilot-timeout.png"), full_page=True)
             (work / "copilot-timeout.html").write_text(page.content(), encoding="utf-8")
             ctx.close()
-            raise SystemExit(f"No downloadable result within {args.timeout}s. Diagnostics saved in {work}")
+            raise SystemExit(f"No downloadable result within {args.timeout}s. Temporary diagnostics were removed with the run directory")
         chat_response = read_chat_response(page)
         ctx.close()
     result_zip = work / f"{root.name}-modified.zip"
     result_hash = normalize_download(downloaded, result_zip)
     if result_hash == source_hash:
         raise SystemExit("Copilot returned a byte-identical archive; refusing to apply as no fix was detected.")
-    backup = backup_and_replace(root, result_zip, Path(args.backup_dir).expanduser().resolve())
+    backup = backup_and_replace(root, result_zip, work / "rollback")
     diff = run(["git", "diff", "--stat"], cwd=root).stdout
     status = run(["git", "status", "--short"], cwd=root).stdout
-    print(json.dumps({"repo": str(root), "source_files": count, "result": str(result_zip),
-                      "backup": str(backup), "status": status, "diff_stat": diff,
+    print(json.dumps({"repo": str(root), "source_files": count, "result": "",
+                      "backup": "", "status": status, "diff_stat": diff,
                       "chat_response": chat_response}, indent=2))
 
 
@@ -393,8 +401,8 @@ def main():
     fp = sp.add_parser("fix")
     fp.add_argument("request")
     fp.add_argument("--repo", default=".")
-    fp.add_argument("--work-dir", default="~/.cache/copilot-repo-roundtrip")
-    fp.add_argument("--backup-dir", default="~/.local/share/copilot-repo-backups")
+    fp.add_argument("--work-dir", default=None, help="Optional parent for automatically deleted temporary round-trip files")
+    fp.add_argument("--backup-dir", default=None, help="Deprecated; rollback copies are temporary and automatically deleted")
     fp.add_argument("--timeout", type=int, default=900)
     fp.add_argument("--model", default="auto", help="Exact visible model label, e.g. auto or GPT-6")
     fp.add_argument("--headless", action="store_true")
