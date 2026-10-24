@@ -283,6 +283,29 @@ def cmd_login(args):
     print(f"Saved browser profile: {profile}")
 
 
+def read_chat_response(page):
+    """Read the latest assistant message, excluding the user's prompt."""
+    selectors = (
+        '[data-message-author-role="assistant"]',
+        '[data-role="assistant"]',
+        '[data-testid*="assistant-message" i]',
+        '[data-testid*="copilot-message" i]',
+        '[class*="assistant-message" i]',
+    )
+    for selector in selectors:
+        try:
+            nodes = page.locator(selector)
+            for i in range(nodes.count() - 1, -1, -1):
+                node = nodes.nth(i)
+                if node.is_visible():
+                    text = node.inner_text(timeout=3000).strip()
+                    if text:
+                        return text
+        except Exception:
+            continue
+    return ""
+
+
 def cmd_fix(args):
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
     root = repo_root(Path(args.repo).resolve())
@@ -296,6 +319,7 @@ def cmd_fix(args):
     prompt = BASE_PROMPT.format(request=args.request.strip())
     sel = selectors_from_env()
     downloaded = None
+    chat_response = ""
     with sync_playwright() as p:
         ctx = open_context(p, profile, args.headless, work)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -346,6 +370,7 @@ def cmd_fix(args):
             (work / "copilot-timeout.html").write_text(page.content(), encoding="utf-8")
             ctx.close()
             raise SystemExit(f"No downloadable result within {args.timeout}s. Diagnostics saved in {work}")
+        chat_response = read_chat_response(page)
         ctx.close()
     result_zip = work / f"{root.name}-modified.zip"
     result_hash = normalize_download(downloaded, result_zip)
@@ -355,7 +380,8 @@ def cmd_fix(args):
     diff = run(["git", "diff", "--stat"], cwd=root).stdout
     status = run(["git", "status", "--short"], cwd=root).stdout
     print(json.dumps({"repo": str(root), "source_files": count, "result": str(result_zip),
-                      "backup": str(backup), "status": status, "diff_stat": diff}, indent=2))
+                      "backup": str(backup), "status": status, "diff_stat": diff,
+                      "chat_response": chat_response}, indent=2))
 
 
 def main():
