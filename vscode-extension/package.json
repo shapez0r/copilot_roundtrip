@@ -52,8 +52,7 @@
         "copilotRoundtrip.model": {
           "type": "string",
           "default": "GPT/GPT-6",
-          "enum": ["Claude/Opus 5.5", "GPT/GPT-6"],
-          "description": "Exact provider/model pair to select in Copilot Chat."
+          "description": "Provider/model text entered in the sidebar (e.g. GPT/GPT-6)."
         },
         "copilotRoundtrip.timeout": {
           "type": "integer",

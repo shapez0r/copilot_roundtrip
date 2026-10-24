@@ -5,3 +5,13 @@
 
 #progress{border-top:1px solid var(--vscode-panel-border);padding-top:8px;font-size:12px}#progressItems{margin:6px 0 0;padding-left:22px;max-height:180px;overflow-y:auto}#progressItems li{padding:3px 0;overflow-wrap:anywhere}#progressItems li:last-child{color:var(--vscode-foreground);font-weight:600}
 .header-controls select{width:auto;max-width:155px;min-width:110px;padding:7px 6px;font:inherit}.header-controls select:focus-visible{outline:2px solid var(--vscode-focusBorder)}
+
+/* Keep every control reachable in narrow secondary sidebars. */
+header{display:flex;flex-direction:column;align-items:stretch;gap:8px}
+.header-controls{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:6px 8px;min-width:0}
+.header-controls #model{flex:1 1 100px;width:100px;min-width:80px;max-width:100%;padding:6px}
+.header-controls .browser-choice{flex:0 0 auto}
+.header-controls #login,.header-controls #finishLogin{flex:0 0 auto;padding:6px 8px}
+.header-controls [hidden]{display:none}
+
+.browser-choice input[type="checkbox"]{width:auto;min-width:0}

@@ -226,12 +226,11 @@ def send_with_retry(page, composer, send_selector, timeout_seconds=120):
 
 def parse_model(model: str):
     """Require an explicit provider/model pair; model names may contain punctuation."""
-    choices = {"Claude": "Opus 5.5", "GPT": "GPT-6"}
     if not isinstance(model, str) or model.count("/") != 1:
-        raise ValueError("Model must be Claude/Opus 5.5 or GPT/GPT-6")
+        raise ValueError("Model must be a provider/model pair (e.g. GPT/GPT-6)")
     provider, name = model.split("/", 1)
-    if choices.get(provider) != name:
-        raise ValueError("Model must be Claude/Opus 5.5 or GPT/GPT-6")
+    if not provider.strip() or not name.strip():
+        raise ValueError("Model must be a provider/model pair (e.g. GPT/GPT-6)")
     return provider, name
 
 def select_model(page, model: str, sel):
@@ -468,7 +467,7 @@ def main():
     fp.add_argument("--work-dir", default=None, help="Optional parent for automatically deleted temporary round-trip files")
     fp.add_argument("--backup-dir", default=None, help="Deprecated; rollback copies are temporary and automatically deleted")
     fp.add_argument("--timeout", type=int, default=900)
-    fp.add_argument("--model", default="GPT/GPT-6", choices=("Claude/Opus 5.5", "GPT/GPT-6"),
+    fp.add_argument("--model", default="GPT/GPT-6",
                     help="Provider/model pair (default: GPT/GPT-6)")
     fp.add_argument("--show-browser", action="store_true", help="Show Chromium during fixes (default: invisible)")
     fp.add_argument("--headless", action="store_true", help="Deprecated; browser is already hidden by default")

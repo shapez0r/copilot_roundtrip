@@ -40,18 +40,19 @@ function nonce() { return crypto.randomBytes(16).toString('hex'); }
 // Keep Playwright out of the system Python and outside the installed VSIX.
 // Both Sign in and Modify repository use this same managed interpreter.
 let runtimeSetup;
-function runSetup(executable, args, output) {
+function runSetup(executable, args, output, progress) {
   return new Promise((resolve, reject) => {
     output.appendLine(`> ${executable} ${args.join(' ')}`);
+    if(progress) progress('Setting up Python environment: '+args.slice(0,3).join(' '));
     const child = cp.spawn(executable, args, {windowsHide:true});
     let errors = '';
-    child.stdout.on('data', data => output.append(data.toString()));
-    child.stderr.on('data', data => { const text=data.toString(); errors+=text; output.append(text); });
+    child.stdout.on('data', data => {const text=data.toString();output.append(text);if(progress) for(const line of text.split(/\r?\n/)) if(line.trim()) progress(line.trim());});
+    child.stderr.on('data', data => { const text=data.toString(); errors+=text; output.append(text);if(progress) for(const line of text.split(/\r?\n/)) if(line.trim()) progress(line.trim()); });
     child.on('error', reject);
     child.on('close', code => code === 0 ? resolve() : reject(new Error(`Python setup failed (exit ${code}). ${errors.trim()}`)));
   });
 }
-async function ensureRuntime(context, cfg, output) {
+async function ensureRuntime(context, cfg, output, progress) {
   if (runtimeSetup) return runtimeSetup;
   runtimeSetup = (async () => {
     const folder = path.join(context.globalStorageUri.fsPath, 'python-runtime');
@@ -60,19 +61,19 @@ async function ensureRuntime(context, cfg, output) {
     const marker = path.join(folder, '.playwright-ready');
     if (!fs.existsSync(python)) {
       fs.mkdirSync(path.dirname(folder), {recursive:true});
-      await runSetup(cfg.pythonPath, ['-m', 'venv', folder], output);
+      await runSetup(cfg.pythonPath, ['-m', 'venv', folder], output, progress);
     }
     // A missing module or interrupted setup must be repaired before launching.
     let installed = false;
     try {
-      await runSetup(python, ['-c', 'import playwright.sync_api'], output);
+      await runSetup(python, ['-c', 'import playwright.sync_api'], output, progress);
       installed = true;
     } catch (_) { /* install below */ }
     if (!installed) {
-      await runSetup(python, ['-m', 'pip', 'install', 'playwright'], output);
+      await runSetup(python, ['-m', 'pip', 'install', 'playwright'], output, progress);
     }
     if (!fs.existsSync(marker)) {
-      await runSetup(python, ['-m', 'playwright', 'install', 'chromium'], output);
+      await runSetup(python, ['-m', 'playwright', 'install', 'chromium'], output, progress);
       fs.writeFileSync(marker, 'ready\n');
     }
     return python;
@@ -82,7 +83,7 @@ async function ensureRuntime(context, cfg, output) {
 }
 
 class ChatProvider {
-  constructor(context, output) { this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; }
+  constructor(context, output) { this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; this.loginProc=null; }
   resolveWebviewView(view) {
     this.view=view;
     const w=view.webview;
@@ -90,10 +91,11 @@ class ChatProvider {
     const n=nonce();
     const css=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.css'));
     const js=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.js'));
-    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><select id="model" title="Choose an exact provider/model pair"><option value="GPT/GPT-6">GPT/GPT-6</option><option value="Claude/Opus 5.5">Claude/Opus 5.5</option></select><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button></div></header><p class="hint">Prompts modify the selected Git repository using Copilot Chat. No inline code suggestions.</p><label for="repo">Repository</label><select id="repo"></select><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes..." required></textarea><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><p id="status" role="status"></p><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><ol id="progressItems" aria-live="polite"></ol></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
+    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" title="Enter provider/model, e.g. GPT/GPT-6"><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the selected Git repository using Copilot Chat. No inline code suggestions.</p><label for="repo">Repository</label><select id="repo"></select><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes..." required></textarea><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><p id="status" role="status"></p><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><ol id="progressItems" aria-live="polite"></ol></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
     w.onDidReceiveMessage(async m=>{
       if(m.type==='ready') this.refresh();
       if(m.type==='login') await vscode.commands.executeCommand('copilotRoundtrip.login');
+      if(m.type==='finishLogin') this.finishLogin();
       if(m.type==='run') await this.run(m.prompt,m.repo,m.model,m.showBrowser);
       if(m.type==='cancel') this.cancel();
       if(m.type==='openResult' && typeof m.path==='string') await this.openResult(m.path);
@@ -104,7 +106,7 @@ class ChatProvider {
   refresh() {
     const folders=(vscode.workspace.workspaceFolders||[]).filter(f=>f.uri.scheme==='file').map(f=>({name:f.name,path:f.uri.fsPath}));
     this.post({type:'repos',folders}); this.post({type:'busy',value:this.busy});
-    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser});
+    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'loginActive',value:!!this.loginProc});
   }
   async openResult(p) {
     // Only open ZIPs emitted by successful runs, never arbitrary paths from the webview.
@@ -119,6 +121,7 @@ class ChatProvider {
     this.post({type:'status', text:message});
     this.post({type:'progressHistory', items:this.statusHistory});
   }
+  finishLogin() { if(this.loginProc && this.loginProc.stdin.writable) { this.updateProgress('login','Finishing browser sign-in...'); this.loginProc.stdin.write('\n'); } }
   cancel() { if(this.proc && !this.proc.killed) { this.proc.kill(); this.updateProgress('cancelled','Stopping the script...'); } }
   async run(prompt, repo, model, showBrowser) {
     if(this.busy) return;
@@ -126,7 +129,8 @@ class ChatProvider {
     const folders=(vscode.workspace.workspaceFolders||[]).filter(f=>f.uri.scheme==='file');
     if(!folders.some(f=>f.uri.fsPath===repo)) { this.post({type:'error',text:'Select an open local workspace folder.'}); return; }
     const cfg=config();
-    cfg.model=['Claude/Opus 5.5','GPT/GPT-6'].includes(model) ? model : 'GPT/GPT-6';
+    cfg.model=typeof model==='string' ? model.trim() : '';
+      if(!/^[^/\s]+\/[^/]+$/.test(cfg.model)) { this.updateProgress('error','Enter a model as provider/model (for example GPT/GPT-6).'); return; }
       cfg.showBrowser=showBrowser===true;
     const script=path.join(this.context.extensionPath,'scripts','copilot_repo_roundtrip.py');
     const choice=await vscode.window.showWarningMessage(
@@ -135,13 +139,12 @@ class ChatProvider {
     if(choice!=='Modify repository') return;
     this.busy=true; this.statusHistory=[]; this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
     this.post({type:'message',item:{role:'user',text:prompt}});
-    this.output.show(true);
     this.output.appendLine(`\n=== Repository: ${repo} ===\nRequest: ${prompt}\n`);
     const args=buildArgs(script,prompt.trim(),repo,cfg);
-    let stdout='',stderr='', cancelled=false;
+    let stdout='',stderr='', cancelled=false, statusBuffer='';
     try {
       this.updateProgress('setup','Checking Python and Playwright...');
-      const python=await ensureRuntime(this.context,cfg,this.output);
+      const python=await ensureRuntime(this.context,cfg,this.output,message=>this.updateProgress('setup',message));
       await new Promise((resolve,reject)=>{
         const child=cp.spawn(python,args,{cwd:repo,windowsHide:false,env:process.env});
         this.proc=child;
@@ -154,10 +157,11 @@ class ChatProvider {
             for(const line of lines){
               const status=parseStatusLine(line);
               if(status) this.updateProgress(status.stage,status.message);
+              else if(line.trim()) this.updateProgress('log',line.trim());
             }
           });
         child.on('error',reject);
-        child.on('close',(code,signal)=>{cancelled=signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
+        child.on('close',(code,signal)=>{if(statusBuffer.trim()){const last=parseStatusLine(statusBuffer);this.updateProgress(last?.stage||'log',last?.message||statusBuffer.trim());}cancelled=signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
       });
       const result=parseResult(stdout);
       const lines=[result.chat_response || 'Repository modification completed.',result.diff_stat && `Changes:\n${result.diff_stat}`,result.status && `Git status:\n${result.status}`,].filter(Boolean);
@@ -170,7 +174,7 @@ class ChatProvider {
       const msg=String(e.message||e);
       this.history.push({role:'user',text:prompt},{role:'error',text:msg});
       this.post({type:'message',item:{role:'error',text:msg}});
-      this.updateProgress('failed','Run failed. See the output panel.');
+      this.updateProgress('failed',msg);
     } finally {this.proc=null;this.busy=false;this.post({type:'busy',value:false});}
   }
 }
@@ -180,17 +184,31 @@ function activate(context) {
   context.subscriptions.push(output,vscode.window.registerWebviewViewProvider('copilotRoundtrip.chat',provider,{webviewOptions:{retainContextWhenHidden:true}}));
   context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.open',()=>vscode.commands.executeCommand('workbench.view.extension.copilotRoundtrip')));
   context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.login',async ()=>{
+    if(provider.loginProc || provider.busy) return;
     const cfg=config(),script=path.join(context.extensionPath,'scripts','copilot_repo_roundtrip.py');
-    output.show(true);
+    provider.updateProgress('login','Preparing browser sign-in...');
     let python;
-    try { python=await ensureRuntime(context,cfg,output); }
-    catch(e) { vscode.window.showErrorMessage('Playwright setup failed: '+String(e.message||e)); return; }
-    const term=vscode.window.createTerminal(process.platform==='win32' ? {name:'Repo Round-Trip Sign In',shellPath:'powershell.exe'} : {name:'Repo Round-Trip Sign In'});
-    // Use PowerShell on Windows and its call operator for quoted executable paths.
-    const quote=process.platform==='win32' ? s=>'"'+s.replace(/"/g,'""')+'"' : s=>"'"+s.replace(/'/g,"'\\''")+"'";
+    try { python=await ensureRuntime(context,cfg,output,message=>provider.updateProgress('setup',message)); }
+    catch(e) { provider.updateProgress('failed','Playwright setup failed: '+String(e.message||e)); return; }
     const args=[script]; if(cfg.profilePath) args.push('--profile',cfg.profilePath); args.push('login');
-    term.show(); term.sendText((process.platform==='win32' ? '& ' : '')+[python,...args].map(quote).join(' '));
-    vscode.window.showInformationMessage('Sign in using the opened Chromium window, then press Enter in the terminal.');
+    const child=cp.spawn(python,args,{windowsHide:false,env:{...process.env,PYTHONUNBUFFERED:'1'}});
+    provider.loginProc=child;
+    provider.post({type:'loginActive',value:true});
+    provider.updateProgress('login','Sign in using the opened browser, then click Finish sign in here.');
+    for(const stream of [child.stdout,child.stderr]) {
+      let buffer='';
+      stream.on('data',chunk=>{
+        const text=chunk.toString(); output.append(text); buffer+=text;
+        const lines=buffer.split(/\r?\n/);buffer=lines.pop();
+        for(const line of lines) if(line.trim()) provider.updateProgress('login',line.trim());
+      });
+      stream.on('end',()=>{if(buffer.trim()) provider.updateProgress('login',buffer.trim());});
+    }
+    child.on('error',e=>provider.updateProgress('failed','Sign-in failed: '+e.message));
+    child.on('close',code=>{
+      provider.loginProc=null;provider.post({type:'loginActive',value:false});
+      provider.updateProgress(code===0?'login':'failed',code===0?'Sign-in browser profile saved.':'Sign-in exited with code '+code+'.');
+    });
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(()=>provider.refresh()));
 }
