@@ -30,6 +30,36 @@ function buildArgs(script, request, repo, cfg) {
   if (cfg.backupDir) args.push('--backup-dir', cfg.backupDir);
   return args;
 }
+// Map a path shown in the Changes or Git status sections to a repository-relative path.
+function cleanGitPath(p) {
+  let v=String(p||'').trim();
+  if(v.includes(' -> ')) v=v.split(' -> ').pop().trim();
+  if(v.length>1 && v.startsWith('"') && v.endsWith('"')) {
+    try { v=JSON.parse(v); } catch (_) { v=v.slice(1,-1); }
+  }
+  return v;
+}
+function statPath(p) {
+  let v=String(p||'').trim();
+  // Renames in diff --stat: "dir/{old => new}/file" or "old => new".
+  const brace=v.match(/^(.*)\{(.*) => (.*)\}(.*)$/);
+  if(brace) v=(brace[1]+brace[3]+brace[4]).replace(/\/\//g,'/');
+  else if(v.includes(' => ')) v=v.split(' => ').pop().trim();
+  return v;
+}
+function resolveChangedPath(file, gitStatus, diffStat) {
+  const statusPaths=String(gitStatus||'').split(/\r?\n/).filter(l=>l.trim()).map(l=>cleanGitPath(l.slice(3)||l));
+  const statPaths=String(diffStat||'').split(/\r?\n/).map(l=>l.match(/^\s*(.+?)\s+\|\s+/)).filter(Boolean).map(m=>statPath(m[1]));
+  const known=[...statusPaths,...statPaths];
+  let wanted=cleanGitPath(statPath(file));
+  if(wanted.startsWith('...')) {
+    // diff --stat abbreviates long paths; match the unique known suffix.
+    const suffix=wanted.slice(3);
+    const matches=[...new Set(statusPaths.filter(p=>p.endsWith(suffix)))];
+    return matches.length===1?matches[0]:null;
+  }
+  return known.includes(wanted)?wanted:null;
+}
 function config() {
   const c = vscode.workspace.getConfiguration('copilotRoundtrip');
   return {pythonPath:c.get('pythonPath','python'), model:c.get('model','GPT/GPT-6'), timeout:c.get('timeout',900),
@@ -99,6 +129,7 @@ class ChatProvider {
       if(m.type==='run') await this.run(m.prompt,m.repo,m.model,m.showBrowser);
       if(m.type==='cancel') this.cancel();
       if(m.type==='openResult' && typeof m.path==='string') await this.openResult(m.path);
+      if(m.type==='openDiff' && typeof m.repo==='string' && typeof m.file==='string') await this.openDiff(m.repo,m.file);
     });
     this.refresh();
   }
@@ -159,7 +190,7 @@ class ChatProvider {
         child.on('close',(code,signal)=>{if(statusBuffer.trim()){const last=parseStatusLine(statusBuffer);this.updateProgress(last?.stage||'log',last?.message||statusBuffer.trim());}cancelled=signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
       });
       const result=parseResult(stdout);
-      const item={role:'assistant',text:result.chat_response || 'Repository modification completed.',diffStat:result.diff_stat || '',gitStatus:result.status || ''};
+      const item={role:'assistant',repo,text:result.chat_response || 'Repository modification completed.',diffStat:result.diff_stat || '',gitStatus:result.status || ''};
       this.history.push({role:'user',text:prompt},{...item});
       this.post({type:'message',item});
       this.updateProgress('completed','Completed. Review the Git diff.');
@@ -207,4 +238,4 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(()=>provider.refresh()));
 }
 function deactivate() {}
-module.exports={activate,deactivate,parseResult,parseStatusLine,buildArgs};
+module.exports={activate,deactivate,parseResult,parseStatusLine,buildArgs,resolveChangedPath};

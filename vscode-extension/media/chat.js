@@ -33,7 +33,7 @@
     const list=document.createElement('div');list.className='result-list';s.append(list);
     return {s,list};
   }
-  function renderChanges(diffStat){
+  function renderChanges(diffStat,repoPath){
     const {s,list}=section('Changes','Changes');
     const lines=(diffStat||'').split(/\r?\n/).filter(l=>l.trim());
     let i=0, summary=null;
@@ -53,7 +53,7 @@
     }
     return s;
   }
-  function renderGitStatus(gitStatus){
+  function renderGitStatus(gitStatus,repoPath){
     const {s,list}=section('Git status','Git status');
     const lines=(gitStatus||'').split(/\r?\n/).filter(l=>l.trim());
     lines.forEach((line,i)=>{

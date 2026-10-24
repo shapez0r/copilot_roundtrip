@@ -5,3 +5,6 @@ test('structured status is parsed',()=>assert.deepEqual(parseStatusLine('ROUNDTR
 test('non-status and malformed lines are ignored',()=>{assert.equal(parseStatusLine('warning'),null);assert.equal(parseStatusLine('ROUNDTRIP_STATUS:{'),null)});
 
 test('model selection preserves provider/model slash',()=>{const a=buildArgs('/script.py','fix','/repo',{model:'Claude/Opus 5.5',timeout:900});assert.equal(a[a.indexOf('--model')+1],'Claude/Opus 5.5')});
+
+const {resolveChangedPath}=require('../extension');
+test('changed file paths resolve for diff links',()=>{const st=' M src/app.js\nR  old.txt -> new.txt\n?? "a b.txt"\n';const ds=' src/app.js | 2 +-\n .../deep/nested/file.js | 1 +\n';assert.equal(resolveChangedPath('src/app.js',st,ds),'src/app.js');assert.equal(resolveChangedPath('old.txt -> new.txt',st,ds),'new.txt');assert.equal(resolveChangedPath('"a b.txt"',st,ds),'a b.txt');assert.equal(resolveChangedPath('../etc/passwd',st,ds),null)});
