@@ -17,6 +17,16 @@
     if(m.type==='showBrowser' && !$('showBrowser').dataset.initialized){$('showBrowser').checked=!!m.value;$('showBrowser').dataset.initialized='true';}
       if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);}
     if(m.type==='busy'){ $('send').disabled=m.value;$('cancel').disabled=!m.value;repo.disabled=m.value;prompt.disabled=m.value;$('model').disabled=m.value;$('showBrowser').disabled=m.value;}
+    if(m.type==='progressHistory'){
+      const list=$('progressItems');
+      list.replaceChildren();
+      for(const item of m.items){
+        const row=document.createElement('li');
+        row.textContent=item.message;
+        list.append(row);
+      }
+      list.scrollTop=list.scrollHeight;
+    }
     if(m.type==='status')$('status').textContent=m.text;
     if(m.type==='error')$('status').textContent=m.text;
   });

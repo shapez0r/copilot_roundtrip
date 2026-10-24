@@ -112,6 +112,13 @@ class ChatProvider {
     if(!fs.existsSync(p)) { vscode.window.showErrorMessage('Result archive no longer exists.'); return; }
     await vscode.env.openExternal(vscode.Uri.file(p));
   }
+  updateProgress(stage, message) {
+    this.currentStatus = message;
+    this.statusHistory.push({stage, message});
+    if (this.statusHistory.length > 100) this.statusHistory.shift();
+    this.post({type:'status', text:message});
+    this.post({type:'progressHistory', items:this.statusHistory});
+  }
   cancel() { if(this.proc && !this.proc.killed) { this.proc.kill(); this.updateProgress('cancelled','Stopping the script...'); } }
   async run(prompt, repo, model, showBrowser) {
     if(this.busy) return;
@@ -139,7 +146,16 @@ class ChatProvider {
         const child=cp.spawn(python,args,{cwd:repo,windowsHide:false,env:process.env});
         this.proc=child;
         child.stdout.on('data',chunk=>{const s=chunk.toString();stdout+=s;this.output.append(s);});
-        child.stderr.on('data',chunk=>{const s=chunk.toString();stderr+=s;this.output.append(s);});
+        child.stderr.on('data',chunk=>{
+            const s=chunk.toString();stderr+=s;this.output.append(s);
+            statusBuffer+=s;
+            const lines=statusBuffer.split(/\r?\n/);
+            statusBuffer=lines.pop();
+            for(const line of lines){
+              const status=parseStatusLine(line);
+              if(status) this.updateProgress(status.stage,status.message);
+            }
+          });
         child.on('error',reject);
         child.on('close',(code,signal)=>{cancelled=signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
       });
