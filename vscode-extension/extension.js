@@ -16,7 +16,7 @@ function buildArgs(script, request, repo, cfg) {
   const args = [script];
   if (cfg.profilePath) args.push('--profile', cfg.profilePath);
   args.push('fix', request, '--repo', repo, '--model', cfg.model || 'auto', '--timeout', String(cfg.timeout || 900));
-  if (cfg.headless) args.push('--headless');
+  if (cfg.showBrowser) args.push('--show-browser');
   if (cfg.allowDirty) args.push('--allow-dirty');
   if (cfg.workDir) args.push('--work-dir', cfg.workDir);
   if (cfg.backupDir) args.push('--backup-dir', cfg.backupDir);
@@ -25,7 +25,7 @@ function buildArgs(script, request, repo, cfg) {
 function config() {
   const c = vscode.workspace.getConfiguration('copilotRoundtrip');
   return {pythonPath:c.get('pythonPath','python'), model:c.get('model','auto'), timeout:c.get('timeout',900),
-    headless:c.get('headless',false), allowDirty:c.get('allowDirty',false), profilePath:c.get('profilePath',''),
+    showBrowser:c.get('showBrowser',false), allowDirty:c.get('allowDirty',false), profilePath:c.get('profilePath',''),
     workDir:c.get('workDir',''), backupDir:c.get('backupDir','')};
 }
 function nonce() { return crypto.randomBytes(16).toString('hex'); }
@@ -82,11 +82,11 @@ class ChatProvider {
     const n=nonce();
     const css=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.css'));
     const js=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.js'));
-    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><input id="model" type="text" value="auto" placeholder="auto or GPT-6" spellcheck="false" title="Exact Copilot model label; auto keeps the current model"><button id="login" type="button">Sign in</button></div></header><p class="hint">Prompts modify the selected Git repository using Copilot Chat. No inline code suggestions.</p><label for="repo">Repository</label><select id="repo"></select><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes..." required></textarea><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><p id="status" role="status"></p></main><script nonce="${n}" src="${js}"></script></body></html>`;
+    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><input id="model" type="text" value="auto" placeholder="auto or GPT-6" spellcheck="false" title="Exact Copilot model label; auto keeps the current model"><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button></div></header><p class="hint">Prompts modify the selected Git repository using Copilot Chat. No inline code suggestions.</p><label for="repo">Repository</label><select id="repo"></select><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes..." required></textarea><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><p id="status" role="status"></p></main><script nonce="${n}" src="${js}"></script></body></html>`;
     w.onDidReceiveMessage(async m=>{
       if(m.type==='ready') this.refresh();
       if(m.type==='login') await vscode.commands.executeCommand('copilotRoundtrip.login');
-      if(m.type==='run') await this.run(m.prompt,m.repo,m.model);
+      if(m.type==='run') await this.run(m.prompt,m.repo,m.model,m.showBrowser);
       if(m.type==='cancel') this.cancel();
       if(m.type==='openResult' && typeof m.path==='string') await this.openResult(m.path);
     });
@@ -96,7 +96,7 @@ class ChatProvider {
   refresh() {
     const folders=(vscode.workspace.workspaceFolders||[]).filter(f=>f.uri.scheme==='file').map(f=>({name:f.name,path:f.uri.fsPath}));
     this.post({type:'repos',folders}); this.post({type:'busy',value:this.busy});
-    this.post({type:'history',items:this.history}); this.post({type:'model',value:config().model});
+    this.post({type:'history',items:this.history}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser});
   }
   async openResult(p) {
     // Only open ZIPs emitted by successful runs, never arbitrary paths from the webview.
@@ -105,13 +105,14 @@ class ChatProvider {
     await vscode.env.openExternal(vscode.Uri.file(p));
   }
   cancel() { if(this.proc && !this.proc.killed) { this.proc.kill(); this.post({type:'status',text:'Stopping the script...'}); } }
-  async run(prompt, repo, model) {
+  async run(prompt, repo, model, showBrowser) {
     if(this.busy) return;
     if(typeof prompt!=='string' || !prompt.trim()) { this.post({type:'error',text:'Enter a prompt first.'}); return; }
     const folders=(vscode.workspace.workspaceFolders||[]).filter(f=>f.uri.scheme==='file');
     if(!folders.some(f=>f.uri.fsPath===repo)) { this.post({type:'error',text:'Select an open local workspace folder.'}); return; }
     const cfg=config();
     cfg.model=typeof model==='string' && model.trim() ? model.trim() : 'auto';
+      cfg.showBrowser=showBrowser===true;
     const script=path.join(this.context.extensionPath,'scripts','copilot_repo_roundtrip.py');
     const choice=await vscode.window.showWarningMessage(
       `Upload the committed snapshot of ${repo} to Copilot and replace its working files with the returned archive? Review the script's backup and deletion behavior before continuing.`,

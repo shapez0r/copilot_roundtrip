@@ -60,11 +60,6 @@
           "minimum": 1,
           "description": "Seconds to wait for Copilot download."
         },
-        "copilotRoundtrip.headless": {
-          "type": "boolean",
-          "default": false,
-          "description": "Run browser invisibly after signing in."
-        },
         "copilotRoundtrip.allowDirty": {
           "type": "boolean",
           "default": false,
@@ -84,6 +79,11 @@
           "type": "string",
           "default": "",
           "description": "Optional backup directory outside the target repository."
+        },
+        "copilotRoundtrip.showBrowser": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the browser during repository modifications. Sign-in always opens a visible browser."
         }
       }
     }

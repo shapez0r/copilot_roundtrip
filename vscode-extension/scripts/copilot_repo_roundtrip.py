@@ -154,43 +154,70 @@ def selectors_from_env():
 
 
 def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000):
-    """Wait for the attachment chip and bounded real progress indicators."""
+    """Wait for the current draft's attachment to finish uploading (up to 3 min)."""
     filename = source_txt.name
-    prefix = filename[:14]
-    deadline = time.time() + timeout_ms / 1000
-    chip = None
-    while time.time() < deadline:
-        for locator in (page.get_by_text(filename, exact=False), page.get_by_text(prefix, exact=False)):
+    deadline = time.monotonic() + timeout_ms / 1000
+    stable_since = None
+    while time.monotonic() < deadline:
+        visible = False
+        for locator in (page.get_by_text(filename, exact=False),
+                        page.get_by_text(filename[:14], exact=False)):
             try:
-                for i in range(locator.count() - 1, -1, -1):
-                    node = locator.nth(i)
-                    if node.is_visible():
-                        chip = node
-                        break
+                visible = any(locator.nth(i).is_visible() for i in range(locator.count()))
             except Exception:
                 pass
-            if chip is not None:
+            if visible:
                 break
-        if chip is not None:
-            break
+        # The persistent OneDrive informational banner is not upload progress.
+        busy = page.locator('[role="progressbar"]:visible, [aria-busy="true"]:visible, '
+                            '[data-testid*="progress" i]:visible, [class*="spinner" i]:visible')
+        if visible and busy.count() == 0:
+            if stable_since is None:
+                stable_since = time.monotonic()
+            if time.monotonic() - stable_since >= 5:
+                return
+        else:
+            stable_since = None
         page.wait_for_timeout(500)
-    if chip is None:
-        raise SystemExit(f"Attachment chip did not appear within {timeout_ms // 1000}s: {filename}")
+    raise SystemExit(f"Attachment upload did not settle within {timeout_ms // 1000}s: {filename}")
 
-    # This persistent banner is informational, not an upload-progress state:
-    # 'Uploading from device will send a copy to OneDrive (work/school).'
-    settle_deadline = time.time() + 12
-    while time.time() < settle_deadline:
-        busy = page.locator(
-            '[role="progressbar"]:visible, [aria-busy="true"]:visible, '
-            '[data-testid*="progress" i]:visible, [class*="spinner" i]:visible'
-        )
-        if busy.count() == 0:
-            page.wait_for_timeout(2000)
-            return
-        page.wait_for_timeout(500)
-    page.wait_for_timeout(1000)
 
+def send_with_retry(page, composer, send_selector, timeout_seconds=120):
+    """Retry transiently disabled send controls, without resending an accepted prompt."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            # A cleared composer indicates that the chat accepted the submission.
+            if not composer.input_value(timeout=2000).strip():
+                return
+        except Exception:
+            try:
+                if not composer.inner_text(timeout=2000).strip():
+                    return
+            except Exception:
+                pass
+        try:
+            button = page.locator(send_selector).first
+            if button.is_visible() and button.is_enabled():
+                button.click(timeout=3000)
+            else:
+                page.wait_for_timeout(1500)
+                continue
+        except Exception:
+            page.wait_for_timeout(1500)
+            continue
+        # Give the UI time to acknowledge before attempting another click.
+        page.wait_for_timeout(2500)
+        try:
+            if not composer.input_value(timeout=2000).strip():
+                return
+        except Exception:
+            try:
+                if not composer.inner_text(timeout=2000).strip():
+                    return
+            except Exception:
+                pass
+    raise SystemExit(f"Prompt was not accepted within {timeout_seconds}s after upload")
 
 def select_model(page, model: str, sel):
     """Select a model through the two-level GPT/OpenAI provider menu."""
@@ -329,7 +356,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
     downloaded = None
     chat_response = ""
     with sync_playwright() as p:
-        ctx = open_context(p, profile, args.headless, work)
+        ctx = open_context(p, profile, not args.show_browser, work)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
         select_model(page, args.model, sel)
@@ -346,10 +373,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         composer = page.locator(sel["composer"]).last
         composer.wait_for(state="visible", timeout=60000)
         composer.fill(prompt)
-        try:
-            page.locator(sel["send"]).first.click(timeout=15000)
-        except Exception:
-            composer.press("Enter")
+        send_with_retry(page, composer, sel["send"])
         deadline = time.time() + args.timeout
         seen = set()
         while time.time() < deadline and downloaded is None:
@@ -405,7 +429,8 @@ def main():
     fp.add_argument("--backup-dir", default=None, help="Deprecated; rollback copies are temporary and automatically deleted")
     fp.add_argument("--timeout", type=int, default=900)
     fp.add_argument("--model", default="auto", help="Exact visible model label, e.g. auto or GPT-6")
-    fp.add_argument("--headless", action="store_true")
+    fp.add_argument("--show-browser", action="store_true", help="Show Chromium during fixes (default: invisible)")
+    fp.add_argument("--headless", action="store_true", help="Deprecated; browser is already hidden by default")
     fp.add_argument("--allow-dirty", action="store_true")
     fp.set_defaults(fn=cmd_fix)
     args = ap.parse_args(); args.fn(args)

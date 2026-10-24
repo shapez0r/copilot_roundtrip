@@ -6,7 +6,7 @@ Experimental Python/Playwright automation for submitting a local Git repository 
 
 ## Contents
 
-- `copilot_repo_roundtrip.py` — command-line tool (`login` and `fix`).
+- `vscode-extension/scripts/copilot_repo_roundtrip.py` — command-line tool (`login` and `fix`).
 
 ## Requirements
 
@@ -18,7 +18,7 @@ Experimental Python/Playwright automation for submitting a local Git repository 
 
 ## Install (Windows PowerShell)
 
-From the folder containing `copilot_repo_roundtrip.py`:
+From the folder containing `vscode-extension/scripts/copilot_repo_roundtrip.py`:
 
 ```powershell
 py -m venv .venv
@@ -33,7 +33,7 @@ If PowerShell blocks activation, you can run `Set-ExecutionPolicy -Scope Process
 ## Sign in
 
 ```powershell
-python .\copilot_repo_roundtrip.py login
+python .\vscode-extension/scripts/copilot_repo_roundtrip.py login
 ```
 
 A Chromium window opens at `https://m365.cloud.microsoft/chat/`. Sign in, navigate to a usable Copilot Chat page, then return to the terminal and press Enter. The persistent browser profile defaults to `~/.copilot-repo-browser`; **do not share or commit it**, as it can contain authentication state.
@@ -41,13 +41,13 @@ A Chromium window opens at `https://m365.cloud.microsoft/chat/`. Sign in, naviga
 ## Request a fix
 
 ```powershell
-python .\copilot_repo_roundtrip.py fix "Add a proper README.md" --repo "C:\path\to\repository"
+python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Add a proper README.md" --repo "C:\path\to\repository"
 ```
 
 To request a specific model (its label must match the visible UI):
 
 ```powershell
-python .\copilot_repo_roundtrip.py fix "Add a proper README.md" --repo "C:\path\to\repository" --model "GPT-6"
+python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Add a proper README.md" --repo "C:\path\to\repository" --model "GPT-6"
 ```
 
 `--model auto` (the default) leaves the currently selected model unchanged. A named model must be available in the account's model menu; otherwise selection fails. Menu layout and model availability may change.
@@ -80,8 +80,8 @@ Backups default to `~/.local/share/copilot-repo-backups`; working downloads and 
 ## Command-line options
 
 ```text
-python copilot_repo_roundtrip.py [--profile PATH] [--url URL] login
-python copilot_repo_roundtrip.py [--profile PATH] [--url URL] fix REQUEST [options]
+python vscode-extension/scripts/copilot_repo_roundtrip.py [--profile PATH] [--url URL] login
+python vscode-extension/scripts/copilot_repo_roundtrip.py [--profile PATH] [--url URL] fix REQUEST [options]
 ```
 
 For `fix`, options include:
@@ -94,7 +94,7 @@ For `fix`, options include:
 - `--headless` — run Chromium without a visible window (requires an existing signed-in profile).
 - `--allow-dirty` — allow a dirty worktree (use with caution).
 
-Use `python copilot_repo_roundtrip.py --help` and `python copilot_repo_roundtrip.py fix --help` for the CLI help.
+Use `python vscode-extension/scripts/copilot_repo_roundtrip.py --help` and `python vscode-extension/scripts/copilot_repo_roundtrip.py fix --help` for the CLI help.
 
 ## UI selector overrides
 
@@ -130,3 +130,5 @@ hello 5
 hello 6
 
 Round-trip upload names use local timestamps such as `repo-20261024-191212.zip.txt`. Temporary source ZIPs, downloaded files and rollback backups are deleted when the run finishes (including errors). The applied repository changes remain in the working tree.
+
+The Python automation has one canonical copy at `vscode-extension/scripts/copilot_repo_roundtrip.py`; the VS Code extension uses this same file. Fix runs are headless by default. Upload readiness is monitored for up to 180 seconds, and prompt submission retries for up to 120 seconds.
