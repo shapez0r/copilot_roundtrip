@@ -7,7 +7,6 @@ Experimental Python/Playwright automation for submitting a local Git repository 
 ## Contents
 
 - `copilot_repo_roundtrip.py` — command-line tool (`login` and `fix`).
-- `COPILOT_REPO_ROUNDTRIP_README.md` — historical implementation notes; some example script names and upload-wait descriptions there refer to earlier versions.
 
 ## Requirements
 
