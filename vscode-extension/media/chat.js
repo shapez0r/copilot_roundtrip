@@ -178,9 +178,17 @@
       readFile(f,name);
     }
   }
-  prompt.addEventListener('paste',e=>{
+  // Clipboard files may appear in items and/or files depending on the source; collect both, deduplicated.
+  function clipboardFiles(cd){
+    const out=[];
+    for(const i of [...(cd.items||[])]) if(i.kind==='file'){const f=i.getAsFile();if(f)out.push(f);}
+    for(const f of [...(cd.files||[])]) if(!out.some(o=>o.name===f.name&&o.size===f.size&&o.type===f.type))out.push(f);
+    return out;
+  }
+  // Listen on the document so pastes are recognized wherever focus is in the sidebar.
+  document.addEventListener('paste',e=>{
     if(prompt.disabled||!e.clipboardData)return;
-    const files=[...e.clipboardData.items].filter(i=>i.kind==='file').map(i=>i.getAsFile()).filter(Boolean);
+    const files=clipboardFiles(e.clipboardData);
     if(!files.length)return; // ordinary text paste
     e.preventDefault();addFiles(files,true);
   });
@@ -194,11 +202,17 @@
     const files=[...(e.dataTransfer.files||[])];
     if(files.length){addFiles(files,false);return;}
     // Drops from the VS Code Explorer provide URIs instead of file contents.
-    const raw=e.dataTransfer.getData('text/uri-list')||'';
-    let list=raw.split(/\r?\n/).map(u=>u.trim()).filter(u=>u&&!u.startsWith('#'));
-    if(!list.length){try{const v=JSON.parse(e.dataTransfer.getData('application/vnd.code.uri-list')||'[]');if(Array.isArray(v))list=v.map(String);}catch(_){}}
+    const dt=e.dataTransfer, get=t=>{try{return dt.getData(t)||'';}catch(_){return '';}};
+    const lines=t=>get(t).split(/\r?\n/).map(u=>u.trim()).filter(u=>u&&!u.startsWith('#'));
+    const json=t=>{try{const v=JSON.parse(get(t)||'[]');return Array.isArray(v)?v.map(String):[];}catch(_){return [];}};
+    let list=lines('text/uri-list');
+    for(const t of ['application/vnd.code.uri-list','resourceurls','codefiles']) if(!list.length) list=json(t);
+    if(!list.length) list=lines('text/plain').filter(u=>/^(file:|[a-zA-Z]:[\\/]|\/|\\\\)/.test(u));
     if(list.length)vscode.postMessage({type:'attachUris',uris:list});
+    else{activity.message='Dropped item was not recognized as a file. Hold Shift while dropping, or use Attach files...';renderActivity();}
   });
+  document.addEventListener('dragover',e=>e.preventDefault());
+  document.addEventListener('drop',e=>{if(!form.contains(e.target))e.preventDefault();});
   $('attach').addEventListener('click',()=>vscode.postMessage({type:'pickAttachments'}));
   form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked,attachments:attachments.map(a=>a.kind==='path'?{kind:'path',path:a.path,name:a.name}:{kind:'data',name:a.name,data:a.data})});prompt.value='';attachments=[];renderAttachments();});
   $('cancel').addEventListener('click',()=>vscode.postMessage({type:'cancel'}));

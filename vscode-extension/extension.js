@@ -215,7 +215,10 @@ class ChatProvider {
     if(this.busy) return;
     const paths=[];
     for(const raw of list) {
-      try { const u=vscode.Uri.parse(String(raw).trim(),true); if(u.scheme==='file') paths.push(u.fsPath); } catch (_) { /* skip */ }
+      const v=String(raw).trim();
+      // Explorer drops may provide file:// URIs or plain absolute paths (codefiles).
+      if(/^[a-zA-Z]:[\\/]/.test(v) || v.startsWith('/') || v.startsWith('\\\\')) { paths.push(vscode.Uri.file(v).fsPath); continue; }
+      try { const u=vscode.Uri.parse(v,true); if(u.scheme==='file') paths.push(u.fsPath); } catch (_) { /* skip */ }
     }
     if(paths.length) this.postAttachedPaths(paths);
     else this.post({type:'error',text:'Dropped item is not a local file.'});

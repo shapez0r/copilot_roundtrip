@@ -191,43 +191,67 @@ def _count(page, selector):
         return 0
 
 
-def attachment_snapshot(page):
-    """Indicator counts taken before attaching, so pre-existing ones are not mistaken for this upload."""
-    return {"strict": _count(page, BUSY_STRICT), "soft": _count(page, BUSY_SOFT),
-            "thumbs": _count(page, THUMBNAILS)}
+# Attachment chips usually expose a remove/close control; a new one indicates a new chip.
+CHIP_CONTROLS = ('button[aria-label*="remove" i]:visible, button[aria-label*="delete" i]:visible, '
+                 '[data-testid*="attachment" i]:visible, [class*="attachment" i]:visible')
+# Bounded recognition window per attempt before trying another attach method.
+RECOGNIZE_SECONDS = 45
 
 
-def _name_visible(page, filename):
-    """Match the file name as visible text or in chip attributes (aria-label/title/alt)."""
-    keys = [filename, filename[:14]]
-    for key in keys:
+def _name_keys(filename):
+    """Full name plus shorter prefixes, because chips often truncate long names."""
+    stem = filename.split(".")[0]
+    keys = [filename, filename[:14], stem[:10]]
+    return [k for i, k in enumerate(keys) if len(k) >= 4 and k not in keys[:i]]
+
+
+def _name_count(page, filename):
+    """Count visible elements showing the file name as text or chip attributes (aria-label/title/alt)."""
+    total = 0
+    for key in _name_keys(filename):
         try:
             loc = page.get_by_text(key, exact=False)
-            if any(loc.nth(i).is_visible() for i in range(loc.count())):
-                return True
+            total += sum(1 for i in range(loc.count()) if loc.nth(i).is_visible())
         except Exception:
             pass
         quoted = key.replace("\\", "\\\\").replace('"', '\\"')
         try:
             loc = page.locator(f'[aria-label*="{quoted}" i], [title*="{quoted}" i], img[alt*="{quoted}" i]')
-            if any(loc.nth(i).is_visible() for i in range(loc.count())):
-                return True
+            total += sum(1 for i in range(loc.count()) if loc.nth(i).is_visible())
         except Exception:
             pass
-    return False
+    return total
+
+
+def attachment_snapshot(page, filename=""):
+    """Indicator counts taken before attaching, so pre-existing ones are not mistaken for this upload."""
+    return {"strict": _count(page, BUSY_STRICT), "soft": _count(page, BUSY_SOFT),
+            "thumbs": _count(page, THUMBNAILS), "chips": _count(page, CHIP_CONTROLS),
+            "names": _name_count(page, filename) if filename else 0}
+
+
+def _recognized(page, filename, baseline, image):
+    """True when this file's chip is visible: its name, or (images) a new thumbnail/chip."""
+    if _name_count(page, filename) > baseline.get("names", 0):
+        return True
+    if _count(page, CHIP_CONTROLS) > baseline.get("chips", 0):
+        return True
+    return image and _count(page, THUMBNAILS) > baseline.get("thumbs", 0)
 
 
 def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000, require_name: bool = True,
-                              baseline=None):
+                              baseline=None, recognize_seconds=None):
     """Wait for the current draft's attachment to finish uploading (up to 3 min).
 
-    The attachment is recognized by its file name (text or chip attributes) or, for
-    images (require_name=False), by a new thumbnail or a short grace period. Upload is
+    The attachment is recognized by a new occurrence of its file name (text or chip
+    attributes), a new attachment chip, or, for images (require_name=False), a new
+    thumbnail. Returns False if nothing is recognized within ``recognize_seconds`` so the
+    caller can retry another attach method instead of waiting indefinitely. Upload is
     settled when progress indicators are no higher than before the attachment was added;
-    persistent generic spinners on an already recognized image are ignored after a grace period.
+    persistent generic spinners are ignored after a grace period.
     """
     filename = source_txt.name
-    baseline = baseline or {"strict": 0, "soft": 0, "thumbs": 0}
+    baseline = baseline or {"strict": 0, "soft": 0, "thumbs": 0, "chips": 0, "names": 0}
     started = time.monotonic()
     deadline = started + timeout_ms / 1000
     stable_since = None
@@ -236,10 +260,11 @@ def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000, 
     while time.monotonic() < deadline:
         now = time.monotonic()
         if recognized_at is None:
-            if _name_visible(page, filename):
+            if _recognized(page, filename, baseline, not require_name):
                 recognized_at = now
-            elif not require_name and (_count(page, THUMBNAILS) > baseline["thumbs"] or now - started >= 10):
-                recognized_at = now
+                emit_status("uploading", f"Attachment recognized: {filename}; waiting for upload to finish...")
+            elif recognize_seconds is not None and now - started >= recognize_seconds:
+                return False
         strict = _count(page, BUSY_STRICT)
         soft = _count(page, BUSY_SOFT)
         settled = (recognized_at is not None and strict <= baseline["strict"]
@@ -247,27 +272,113 @@ def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000, 
         if settled:
             if stable_since is None:
                 stable_since = now
-            if now - stable_since >= 5:
-                return
+            if now - stable_since >= 3:
+                return True
         else:
             stable_since = None
-        if now - last_update >= 15:
+        if now - last_update >= 10:
             state = "uploading" if recognized_at is not None else "waiting for attachment chip"
             emit_status("uploading", f"Waiting for {filename} ({state}, {int(now - started)}s)...")
             last_update = now
         page.wait_for_timeout(500)
+    if recognized_at is None:
+        return False
     raise SystemExit(f"Attachment upload did not settle within {timeout_ms // 1000}s: {filename}")
 
 
-def attach_file(page, sel, path: Path):
-    """Prefer direct file input; fall back to file chooser triggered by Add/Attach button."""
-    file_input = page.locator(sel["file"]).first
-    try:
-        file_input.set_input_files(str(path), timeout=15000)
-    except Exception:
-        with page.expect_file_chooser(timeout=30000) as fc:
-            page.get_by_role("button", name=lambda n: bool(n) and ("attach" in n.lower() or "add" in n.lower())).first.click()
-        fc.value.set_files(str(path))
+def _accept_matches(accept, path: Path):
+    """Whether a file input's accept attribute allows this file (empty accept allows anything)."""
+    accept = (accept or "").strip().lower()
+    if not accept:
+        return True
+    suffix = path.suffix.lower()
+    image = suffix in IMAGE_SUFFIXES
+    for token in (t.strip() for t in accept.split(",")):
+        if not token:
+            continue
+        if token in ("*", "*/*") or (token.startswith(".") and path.name.lower().endswith(token)):
+            return True
+        if image and token in ("image/*", "image/" + suffix.lstrip(".").replace("jpg", "jpeg")):
+            return True
+    return False
+
+
+def _file_inputs_for(page, sel, path: Path):
+    """File inputs ordered by suitability: accept matches the file type first."""
+    loc = page.locator(sel["file"])
+    preferred, fallback = [], []
+    for i in range(_count(page, sel["file"])):
+        node = loc.nth(i)
+        try:
+            accept = node.get_attribute("accept", timeout=2000)
+        except Exception:
+            accept = None
+        (preferred if _accept_matches(accept, path) else fallback).append(node)
+    return preferred + fallback
+
+
+def _attach_with_chooser(page, path: Path):
+    """Open the composer's attach/upload control and supply the file via the file chooser."""
+    import re
+    name = re.compile(r"attach|upload|add (a )?file|add content|add files|add image|^add$|^\+$", re.I)
+    buttons = page.get_by_role("button", name=name)
+    for i in range(buttons.count() - 1, -1, -1):
+        button = buttons.nth(i)
+        try:
+            if not button.is_visible():
+                continue
+            with page.expect_file_chooser(timeout=8000) as fc:
+                button.click(timeout=3000)
+                # Some menus require choosing an upload entry after opening the "+" button.
+                try:
+                    page.get_by_role("menuitem", name=re.compile(r"upload|attach|file|image", re.I)).first.click(timeout=2500)
+                except Exception:
+                    pass
+            fc.value.set_files(str(path))
+            return True
+        except Exception:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+    return False
+
+
+def attach_methods(page, sel, path: Path):
+    """Yield attach attempts: each matching file input, then the file-chooser button flow."""
+    for node in _file_inputs_for(page, sel, path):
+        def via_input(node=node):
+            node.set_input_files(str(path), timeout=15000)
+            return True
+        yield via_input
+    yield lambda: _attach_with_chooser(page, path)
+
+
+def attach_file(page, sel, path: Path, require_name: bool = True):
+    """Attach a file and wait until Copilot recognizes and finishes uploading it.
+
+    Tries suitable file inputs (matching ``accept``) and then the attach button's file
+    chooser; each attempt has a bounded recognition window so the run never stays
+    stuck on "attaching" when an input silently rejects the file.
+    """
+    tried = 0
+    for method in attach_methods(page, sel, path):
+        baseline = attachment_snapshot(page, path.name)
+        try:
+            if not method():
+                continue
+        except Exception:
+            continue
+        tried += 1
+        if tried > 1:
+            emit_status("uploading", f"Retrying attachment of {path.name} (attempt {tried})...")
+        if wait_for_attachment_ready(page, path, require_name=require_name, baseline=baseline,
+                                     recognize_seconds=RECOGNIZE_SECONDS):
+            return
+        if tried >= 3:
+            break
+    raise SystemExit(f"Copilot did not accept the attachment {path.name}. Check that this file type "
+                     "is supported by Copilot Chat or override COPILOT_FILE_INPUT.")
 
 
 def send_with_retry(page, composer, send_selector, timeout_seconds=120):
@@ -474,17 +585,11 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         emit_status("model", "Checking Copilot model selection...")
         select_model(page, args.model, sel)
         emit_status("uploading", "Attaching repository archive...")
-        baseline = attachment_snapshot(page)
-        attach_file(page, sel, source_txt)
         # Do not submit until the upload belongs to this same draft message.
-        emit_status("uploading", "Waiting for attachment upload to finish...")
-        wait_for_attachment_ready(page, source_txt, baseline=baseline)
+        attach_file(page, sel, source_txt)
         for index, extra in enumerate(attachments, 1):
             emit_status("uploading", f"Attaching additional file {index}/{len(attachments)}: {extra.name}...")
-            baseline = attachment_snapshot(page)
-            attach_file(page, sel, extra)
-            wait_for_attachment_ready(page, extra, require_name=extra.suffix.lower() not in IMAGE_SUFFIXES,
-                                      baseline=baseline)
+            attach_file(page, sel, extra, require_name=extra.suffix.lower() not in IMAGE_SUFFIXES)
             emit_status("uploading", f"Additional file {index}/{len(attachments)} attached: {extra.name}")
         emit_status("prompt", "Preparing modification request...")
         composer = page.locator(sel["composer"]).last
