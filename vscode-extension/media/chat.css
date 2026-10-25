@@ -63,3 +63,9 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .attachment-remove{flex:0 0 auto;padding:0 6px;line-height:18px;background:transparent;color:inherit}
 .attachment-remove:hover{background:var(--vscode-list-hoverBackground)}
 .message-attachments{font-size:12px;opacity:.8;overflow-wrap:anywhere}
+/* Copy action on Copilot responses; response text stays selectable. */
+.message pre{user-select:text;-webkit-user-select:text;cursor:text}
+.message-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.message-copy{flex:0 0 auto;padding:2px 8px;font-size:11px;background:var(--vscode-button-secondaryBackground,var(--vscode-button-background));color:var(--vscode-button-secondaryForeground,var(--vscode-button-foreground))}
+.message-copy:hover{background:var(--vscode-button-secondaryHoverBackground,var(--vscode-button-hoverBackground))}
+.message-copy:focus-visible{outline:2px solid var(--vscode-focusBorder)}

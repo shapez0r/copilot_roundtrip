@@ -174,12 +174,17 @@ class ChatProvider {
       if(m.type==='pickAttachments') await this.pickAttachments();
       if(m.type==='attachUris' && Array.isArray(m.uris)) this.attachUris(m.uris);
       if(m.type==='cancel') this.cancel();
+      if(m.type==='copy' && typeof m.text==='string') await this.copyText(m.text);
       if(m.type==='openResult' && typeof m.path==='string') await this.openResult(m.path);
       if(m.type==='openDiff' && typeof m.repo==='string' && typeof m.file==='string') await this.openDiff(m.repo,m.file);
     });
     this.refresh();
   }
   post(m) { if(this.view) this.view.webview.postMessage(m); }
+  async copyText(text) {
+    try { await vscode.env.clipboard.writeText(text); vscode.window.setStatusBarMessage('Copilot response copied to clipboard.',2000); }
+    catch(e) { vscode.window.showErrorMessage('Could not copy to clipboard: '+String(e.message||e)); }
+  }
   refresh() {
     this.post({type:'busy',value:this.busy});
     this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'loginActive',value:!!this.loginProc});

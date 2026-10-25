@@ -6,12 +6,32 @@
     const card=document.createElement('article');card.className='message '+item.role;
     const heading=document.createElement('strong');heading.textContent=item.role==='user'?'You':item.role==='error'?'Error':'Copilot response';
     const text=document.createElement('pre');text.textContent=item.text||'';
-    card.append(heading,text);
+    if(item.role==='assistant'){
+      const head=document.createElement('div');head.className='message-head';
+      const copy=document.createElement('button');copy.type='button';copy.className='message-copy';copy.textContent='Copy';
+      copy.setAttribute('aria-label','Copy Copilot response');
+      copy.addEventListener('click',()=>{copyText(item.text||'');copy.textContent='Copied';setTimeout(()=>{copy.textContent='Copy';},1500);});
+      head.append(heading,copy);card.append(head,text);
+    } else card.append(heading,text);
     if(Array.isArray(item.attachments)&&item.attachments.length){const att=document.createElement('div');att.className='message-attachments';att.textContent='Attached: '+item.attachments.join(', ');card.append(att);}
     messages.append(card);
     if(item.role==='assistant' && ('diffStat' in item || 'gitStatus' in item)) messages.append(renderChanges(item.diffStat),renderGitStatus(item.gitStatus));
     messages.scrollTop=messages.scrollHeight;
   }
+  // Webview clipboard access is unreliable in VS Code sidebars; the extension host writes the clipboard.
+  function copyText(value){
+    if(!value)return;
+    vscode.postMessage({type:'copy',text:value});
+  }
+  // Ctrl/Cmd+C on selected chat text (keyboard copy is not always forwarded inside webview views).
+  document.addEventListener('keydown',e=>{
+    if(!(e.ctrlKey||e.metaKey)||e.altKey||e.shiftKey||String(e.key).toLowerCase()!=='c')return;
+    const t=e.target;
+    if(t&&(t.tagName==='TEXTAREA'||t.tagName==='INPUT'))return;
+    const sel=window.getSelection(), value=sel?sel.toString():'';
+    if(!value||!sel.anchorNode||!messages.contains(sel.anchorNode))return;
+    e.preventDefault();copyText(value);
+  });
   // Separate "Changes" and "Git status" sections, styled like Execution activity.
   function statusKind(code){
     if(code==='??'||code.includes('A')) return {kind:'added',badge:code==='??'?'U':'A',label:code==='??'?'Untracked':'Added'};
