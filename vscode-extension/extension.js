@@ -182,7 +182,7 @@ class ChatProvider {
   }
   post(m) { if(this.view) this.view.webview.postMessage(m); }
   async copyText(text) {
-    try { await vscode.env.clipboard.writeText(text); vscode.window.setStatusBarMessage('Copilot response copied to clipboard.',2000); }
+    try { await vscode.env.clipboard.writeText(text); vscode.window.setStatusBarMessage('Copied to clipboard.',2000); }
     catch(e) { vscode.window.showErrorMessage('Could not copy to clipboard: '+String(e.message||e)); }
   }
   refresh() {

@@ -23,14 +23,44 @@
     if(!value)return;
     vscode.postMessage({type:'copy',text:value});
   }
-  // Ctrl/Cmd+C on selected chat text (keyboard copy is not always forwarded inside webview views).
-  document.addEventListener('keydown',e=>{
-    if(!(e.ctrlKey||e.metaKey)||e.altKey||e.shiftKey||String(e.key).toLowerCase()!=='c')return;
-    const t=e.target;
-    if(t&&(t.tagName==='TEXTAREA'||t.tagName==='INPUT'))return;
-    const sel=window.getSelection(), value=sel?sel.toString():'';
-    if(!value||!sel.anchorNode||!messages.contains(sel.anchorNode))return;
-    e.preventDefault();copyText(value);
+  // Copy selected chat text with Ctrl/Cmd+C (or Ctrl+Insert / Edit > Copy).
+  // VS Code webview views do not reliably forward keyboard copy, and its own copy command runs
+  // document.execCommand('copy'), so handle both the keystroke and the resulting 'copy' event.
+  function chatSelection(){
+    const sel=window.getSelection();
+    if(!sel||sel.isCollapsed||!sel.rangeCount)return '';
+    const value=sel.toString();
+    if(!value)return '';
+    const r=sel.getRangeAt(0);
+    const inside=n=>!!n&&messages.contains(n);
+    return inside(sel.anchorNode)||inside(sel.focusNode)||inside(r.commonAncestorContainer)?value:'';
+  }
+  // Remember the last chat selection in case focus moves before the copy command runs.
+  let lastSelection='', lastCopy={value:'',at:0};
+  document.addEventListener('selectionchange',()=>{const v=chatSelection();if(v)lastSelection=v;});
+  messages.addEventListener('mousedown',()=>{lastSelection='';});
+  function copySelection(value){
+    // Avoid a duplicate host write when both the keystroke and the copy event fire.
+    const now=Date.now();
+    if(value===lastCopy.value&&now-lastCopy.at<300)return;
+    lastCopy={value,at:now};copyText(value);
+  }
+  function isEditable(t){return !!t&&(t.tagName==='TEXTAREA'||t.tagName==='INPUT'||t.isContentEditable);}
+  window.addEventListener('keydown',e=>{
+    if(e.altKey||e.shiftKey||!(e.ctrlKey||e.metaKey))return;
+    const isC=String(e.key).toLowerCase()==='c'||e.code==='KeyC', isIns=e.ctrlKey&&e.key==='Insert';
+    if(!isC&&!isIns)return;
+    if(isEditable(e.target)||isEditable(document.activeElement))return;
+    const value=chatSelection();
+    if(!value)return;
+    e.preventDefault();e.stopPropagation();copySelection(value);
+  },true);
+  document.addEventListener('copy',e=>{
+    if(isEditable(document.activeElement))return;
+    const value=chatSelection()||lastSelection;
+    if(!value)return;
+    if(e.clipboardData){e.clipboardData.setData('text/plain',value);e.preventDefault();}
+    copySelection(value);
   });
   // Separate "Changes" and "Git status" sections, styled like Execution activity.
   function statusKind(code){
