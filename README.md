@@ -52,13 +52,21 @@ python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Add a proper RE
 
 `--model` accepts a provider/model pair such as `Claude/Opus 5.5` or `GPT/GPT-6` (the default). The slash separates provider and model; spaces, dots, and dashes in the model name are preserved. The chosen model must be available in the account's model menu; otherwise selection fails. Menu layout and model availability may change.
 
+To attach additional files to the prompt (for example a screenshot, picture, or specification), pass a path to each file with `--attach` (repeatable):
+
+```powershell
+python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Match the layout in the screenshot" --repo "C:\path\to\repository" --attach "C:\pictures\layout.png" --attach "C:\docs\spec.pdf"
+```
+
+Attached files are uploaded after the repository archive and mentioned in the prompt as context; they are not added to the repository.
+
 The tool requires a clean working tree by default. `--allow-dirty` bypasses this check, but the uploaded snapshot is still made from `HEAD`, **not** from uncommitted or untracked changes.
 
 ## How it works
 
 1. Confirms the target is a Git worktree and checks cleanliness unless `--allow-dirty` is set.
 2. Runs `git archive --format=zip HEAD`, saving ZIP bytes under a `.zip.txt` name for attachment.
-3. Opens Copilot Chat, optionally selects the model, uploads the archive, waits for an attachment chip and bounded progress checks, then submits the repair request.
+3. Opens Copilot Chat, optionally selects the model, uploads the archive (followed by any `--attach` files), waits for an attachment chip and bounded progress checks, then submits the repair request.
 4. Waits for a downloadable response; if none appears before the timeout, saves a screenshot and HTML diagnostics.
 5. Checks that the download is a ZIP with files, rejects traversal paths, `.git` entries and Unix symlinks, and refuses a byte-identical archive.
 6. Backs up all existing worktree files (including untracked files), clears the worktree except `.git`, then copies the complete extracted repository into place. On an apply failure, it restores the backup. It prints Git status, diff statistics, and the latest Copilot assistant chat response (when available) in the JSON output.
@@ -93,6 +101,7 @@ For `fix`, options include:
 - `--timeout SECONDS` — download wait timeout (default: `900`).
 - `--headless` — run Chromium without a visible window (requires an existing signed-in profile).
 - `--allow-dirty` — allow a dirty worktree (use with caution).
+- `--attach PATH` — additional file or picture to attach to the prompt; repeat for several files.
 
 Use `python vscode-extension/scripts/copilot_repo_roundtrip.py --help` and `python vscode-extension/scripts/copilot_repo_roundtrip.py fix --help` for the CLI help.
 

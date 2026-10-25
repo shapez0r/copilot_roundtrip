@@ -20,6 +20,25 @@ BASE_PROMPT = (
 )
 
 
+ATTACHMENTS_NOTE = (
+    "\n\nAdditional files are attached as context for this request "
+    "(they are not part of the repository): {names}"
+)
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".heic"}
+
+
+def resolve_attachments(paths):
+    """Validate extra files (images, documents, ...) to attach alongside the archive."""
+    result = []
+    for raw in paths or []:
+        path = Path(raw).expanduser().resolve()
+        if not path.is_file():
+            raise SystemExit(f"Attachment not found or not a file: {raw}")
+        if path not in result:
+            result.append(path)
+    return result
+
+
 def emit_status(stage, message):
     """Line-delimited progress on stderr; stdout remains the final JSON result."""
     print("ROUNDTRIP_STATUS:" + json.dumps({"stage": stage, "message": message}),
@@ -158,13 +177,17 @@ def selectors_from_env():
     }
 
 
-def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000):
-    """Wait for the current draft's attachment to finish uploading (up to 3 min)."""
+def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000, require_name: bool = True):
+    """Wait for the current draft's attachment to finish uploading (up to 3 min).
+
+    Image attachments may render as thumbnails without a visible file name, so
+    require_name=False only waits for upload progress indicators to clear.
+    """
     filename = source_txt.name
     deadline = time.monotonic() + timeout_ms / 1000
     stable_since = None
     while time.monotonic() < deadline:
-        visible = False
+        visible = not require_name
         for locator in (page.get_by_text(filename, exact=False),
                         page.get_by_text(filename[:14], exact=False)):
             try:
@@ -185,6 +208,17 @@ def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000):
             stable_since = None
         page.wait_for_timeout(500)
     raise SystemExit(f"Attachment upload did not settle within {timeout_ms // 1000}s: {filename}")
+
+
+def attach_file(page, sel, path: Path):
+    """Prefer direct file input; fall back to file chooser triggered by Add/Attach button."""
+    file_input = page.locator(sel["file"]).first
+    try:
+        file_input.set_input_files(str(path), timeout=15000)
+    except Exception:
+        with page.expect_file_chooser(timeout=30000) as fc:
+            page.get_by_role("button", name=lambda n: bool(n) and ("attach" in n.lower() or "add" in n.lower())).first.click()
+        fc.value.set_files(str(path))
 
 
 def send_with_retry(page, composer, send_selector, timeout_seconds=120):
@@ -354,6 +388,7 @@ def read_chat_response(page):
 def cmd_fix(args):
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
     parse_model(args.model)
+    args.attachments = resolve_attachments(args.attach)
     emit_status("checking", "Checking repository and Git working tree...")
     root = repo_root(Path(args.repo).resolve())
     ensure_clean(root, args.allow_dirty)
@@ -375,6 +410,9 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
     source_hash, count = make_archive(root, source_txt)
     emit_status("archiving", f"Archive ready ({count} entries).")
     prompt = BASE_PROMPT.format(request=args.request.strip())
+    attachments = getattr(args, "attachments", None) or []
+    if attachments:
+        prompt += ATTACHMENTS_NOTE.format(names=", ".join(a.name for a in attachments))
     sel = selectors_from_env()
     downloaded = None
     chat_response = ""
@@ -386,18 +424,15 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
         emit_status("model", "Checking Copilot model selection...")
         select_model(page, args.model, sel)
-        # Prefer direct file input; fall back to file chooser triggered by Add/Attach button.
         emit_status("uploading", "Attaching repository archive...")
-        file_input = page.locator(sel["file"]).first
-        try:
-            file_input.set_input_files(str(source_txt), timeout=15000)
-        except Exception:
-            with page.expect_file_chooser(timeout=30000) as fc:
-                page.get_by_role("button", name=lambda n: bool(n) and ("attach" in n.lower() or "add" in n.lower())).first.click()
-            fc.value.set_files(str(source_txt))
+        attach_file(page, sel, source_txt)
         # Do not submit until the upload belongs to this same draft message.
         emit_status("uploading", "Waiting for attachment upload to finish...")
         wait_for_attachment_ready(page, source_txt)
+        for index, extra in enumerate(attachments, 1):
+            emit_status("uploading", f"Attaching additional file {index}/{len(attachments)}: {extra.name}...")
+            attach_file(page, sel, extra)
+            wait_for_attachment_ready(page, extra, require_name=extra.suffix.lower() not in IMAGE_SUFFIXES)
         emit_status("prompt", "Preparing modification request...")
         composer = page.locator(sel["composer"]).last
         composer.wait_for(state="visible", timeout=60000)
@@ -472,6 +507,8 @@ def main():
     fp.add_argument("--show-browser", action="store_true", help="Show Chromium during fixes (default: invisible)")
     fp.add_argument("--headless", action="store_true", help="Deprecated; browser is already hidden by default")
     fp.add_argument("--allow-dirty", action="store_true")
+    fp.add_argument("--attach", action="append", default=[], metavar="PATH",
+                    help="Additional file (e.g. a picture) to attach to the prompt; repeat for several files")
     fp.set_defaults(fn=cmd_fix)
     args = ap.parse_args(); args.fn(args)
 

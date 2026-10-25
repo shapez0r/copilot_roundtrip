@@ -4,6 +4,7 @@ const cp = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const os = require('os');
 
 function parseResult(output) {
   const text = output.trim();
@@ -28,6 +29,7 @@ function buildArgs(script, request, repo, cfg) {
   if (cfg.allowDirty) args.push('--allow-dirty');
   if (cfg.workDir) args.push('--work-dir', cfg.workDir);
   if (cfg.backupDir) args.push('--backup-dir', cfg.backupDir);
+  for (const file of cfg.attachments || []) args.push('--attach', file);
   return args;
 }
 // Map a path shown in the Changes or Git status sections to a repository-relative path.
@@ -59,6 +61,40 @@ function resolveChangedPath(file, gitStatus, diffStat) {
     return matches.length===1?matches[0]:null;
   }
   return known.includes(wanted)?wanted:null;
+}
+// Additional prompt attachments: picked/dropped file paths, or pasted/dropped bytes (e.g. images).
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+function safeAttachmentName(name, fallback) {
+  let v = path.basename(String(name || '').replace(/\\/g, '/')).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim();
+  if (!v || v === '.' || v === '..') v = fallback;
+  return v.slice(0, 150);
+}
+// Returns script-ready file paths; byte attachments are written to a private temporary folder.
+function materializeAttachments(items, makeDir) {
+  const files = [], used = new Set();
+  let dir = null;
+  (Array.isArray(items) ? items : []).forEach((a, i) => {
+    if (!a || typeof a !== 'object') return;
+    if (a.kind === 'path' && typeof a.path === 'string') {
+      const st = fs.statSync(a.path, {throwIfNoEntry: false});
+      if (!st || !st.isFile()) throw new Error('Attachment not found or not a file: ' + a.path);
+      if (!files.includes(a.path)) files.push(a.path);
+      return;
+    }
+    if (a.kind === 'data' && typeof a.data === 'string') {
+      const bytes = Buffer.from(a.data, 'base64');
+      if (!bytes.length) throw new Error('Attachment is empty: ' + (a.name || 'file'));
+      if (bytes.length > MAX_ATTACHMENT_BYTES) throw new Error('Attachment is larger than 50 MB: ' + (a.name || 'file'));
+      let name = safeAttachmentName(a.name, `attachment-${i + 1}`);
+      if (used.has(name.toLowerCase())) name = `${i + 1}-${name}`;
+      used.add(name.toLowerCase());
+      if (!dir) dir = makeDir();
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, bytes);
+      files.push(file);
+    }
+  });
+  return {files, dir};
 }
 function config() {
   const c = vscode.workspace.getConfiguration('copilotRoundtrip');
@@ -129,12 +165,14 @@ class ChatProvider {
     const n=nonce();
     const css=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.css'));
     const js=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.js'));
-    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes..." required></textarea><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
+    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src data:; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes... (paste or drop images/files to attach)" required></textarea><div class="attach-bar"><button id="attach" type="button" title="Attach files to the prompt">Attach files...</button><span class="attach-hint">Paste an image, or drag and drop images/files here (hold Shift while dropping).</span></div><ul id="attachments" class="attachments" aria-label="Attached files" hidden></ul><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
     w.onDidReceiveMessage(async m=>{
       if(m.type==='ready') this.refresh();
       if(m.type==='login') await vscode.commands.executeCommand('copilotRoundtrip.login');
       if(m.type==='finishLogin') this.finishLogin();
-      if(m.type==='run') await this.run(m.prompt,m.model,m.showBrowser);
+      if(m.type==='run') await this.run(m.prompt,m.model,m.showBrowser,m.attachments);
+      if(m.type==='pickAttachments') await this.pickAttachments();
+      if(m.type==='attachUris' && Array.isArray(m.uris)) this.attachUris(m.uris);
       if(m.type==='cancel') this.cancel();
       if(m.type==='openResult' && typeof m.path==='string') await this.openResult(m.path);
       if(m.type==='openDiff' && typeof m.repo==='string' && typeof m.file==='string') await this.openDiff(m.repo,m.file);
@@ -158,9 +196,33 @@ class ChatProvider {
     if (this.statusHistory.length > 100) this.statusHistory.shift();
     this.post({type:'progressHistory', items:this.statusHistory});
   }
+  postAttachedPaths(paths) {
+    const items=[];
+    for(const p of paths) {
+      const st=fs.statSync(p,{throwIfNoEntry:false});
+      if(st && st.isFile()) items.push({kind:'path',path:p,name:path.basename(p),size:st.size});
+    }
+    if(items.length) this.post({type:'attached',items});
+    if(items.length<paths.length) this.post({type:'error',text:'Only files can be attached (folders and missing paths were skipped).'});
+  }
+  async pickAttachments() {
+    if(this.busy) return;
+    const uris=await vscode.window.showOpenDialog({canSelectMany:true,canSelectFiles:true,canSelectFolders:false,openLabel:'Attach'});
+    if(uris && uris.length) this.postAttachedPaths(uris.filter(u=>u.scheme==='file').map(u=>u.fsPath));
+  }
+  // Files dropped from the VS Code Explorer or editor tabs arrive as URIs.
+  attachUris(list) {
+    if(this.busy) return;
+    const paths=[];
+    for(const raw of list) {
+      try { const u=vscode.Uri.parse(String(raw).trim(),true); if(u.scheme==='file') paths.push(u.fsPath); } catch (_) { /* skip */ }
+    }
+    if(paths.length) this.postAttachedPaths(paths);
+    else this.post({type:'error',text:'Dropped item is not a local file.'});
+  }
   finishLogin() { if(this.loginProc && this.loginProc.stdin.writable) { this.updateProgress('login','Finishing browser sign-in...'); this.loginProc.stdin.write('\n'); } }
   cancel() { if(this.proc && !this.proc.killed) { this.proc.kill(); this.updateProgress('cancelled','Stopping the script...'); } }
-  async run(prompt, model, showBrowser) {
+  async run(prompt, model, showBrowser, attachments) {
     if(this.busy) return;
     if(typeof prompt!=='string' || !prompt.trim()) { this.post({type:'error',text:'Enter a prompt first.'}); return; }
     const repo=currentRepo();
@@ -171,11 +233,16 @@ class ChatProvider {
       cfg.showBrowser=showBrowser===true;
     const script=path.join(this.context.extensionPath,'scripts','copilot_repo_roundtrip.py');
     this.busy=true; this.statusHistory=[]; this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
-    this.post({type:'message',item:{role:'user',text:prompt}});
+    const attachmentNames=(Array.isArray(attachments)?attachments:[]).filter(a=>a&&typeof a==='object').map(a=>String(a.name||(a.path?path.basename(a.path):'file')));
+    const userItem={role:'user',text:prompt,attachments:attachmentNames};
+    this.post({type:'message',item:userItem});
     this.output.appendLine(`\n=== Repository: ${repo} ===\nRequest: ${prompt}\n`);
-    const args=buildArgs(script,prompt.trim(),repo,cfg);
-    let stdout='',stderr='', cancelled=false, statusBuffer='';
+    let stdout='',stderr='', cancelled=false, statusBuffer='', attachDir=null;
     try {
+      const attached=materializeAttachments(attachments,()=>fs.mkdtempSync(path.join(os.tmpdir(),'copilot-roundtrip-attach-')));
+      attachDir=attached.dir; cfg.attachments=attached.files;
+      if(cfg.attachments.length) this.output.appendLine(`Attachments: ${cfg.attachments.join(', ')}`);
+      const args=buildArgs(script,prompt.trim(),repo,cfg);
       this.updateProgress('setup','Checking Python and Playwright...');
       const python=await ensureRuntime(this.context,cfg,this.output,message=>this.updateProgress('setup',message));
       await new Promise((resolve,reject)=>{
@@ -198,16 +265,19 @@ class ChatProvider {
       });
       const result=parseResult(stdout);
       const item={role:'assistant',repo,text:result.chat_response || 'Repository modification completed.',diffStat:result.diff_stat || '',gitStatus:result.status || ''};
-      this.history.push({role:'user',text:prompt},{...item});
+      this.history.push(userItem,{...item});
       this.post({type:'message',item});
       this.updateProgress('completed','Completed. Review the Git diff.');
       vscode.window.showInformationMessage('Repository round-trip completed. Review your changes.');
     } catch(e) {
       const msg=String(e.message||e);
-      this.history.push({role:'user',text:prompt},{role:'error',text:msg});
+      this.history.push(userItem,{role:'error',text:msg});
       this.post({type:'message',item:{role:'error',text:msg}});
       this.updateProgress('failed',msg);
-    } finally {this.proc=null;this.busy=false;this.post({type:'busy',value:false});}
+    } finally {
+      if(attachDir) { try { fs.rmSync(attachDir,{recursive:true,force:true}); } catch (_) { /* best effort */ } }
+      this.proc=null;this.busy=false;this.post({type:'busy',value:false});
+    }
   }
 }
 function activate(context) {
@@ -245,4 +315,4 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(()=>provider.refresh()));
 }
 function deactivate() {}
-module.exports={activate,deactivate,parseResult,parseStatusLine,buildArgs,resolveChangedPath};
+module.exports={activate,deactivate,parseResult,parseStatusLine,buildArgs,resolveChangedPath,materializeAttachments,safeAttachmentName};

@@ -7,6 +7,7 @@
     const heading=document.createElement('strong');heading.textContent=item.role==='user'?'You':item.role==='error'?'Error':'Copilot response';
     const text=document.createElement('pre');text.textContent=item.text||'';
     card.append(heading,text);
+    if(Array.isArray(item.attachments)&&item.attachments.length){const att=document.createElement('div');att.className='message-attachments';att.textContent='Attached: '+item.attachments.join(', ');card.append(att);}
     messages.append(card);
     if(item.role==='assistant' && ('diffStat' in item || 'gitStatus' in item)) messages.append(renderChanges(item.diffStat),renderGitStatus(item.gitStatus));
     messages.scrollTop=messages.scrollHeight;
@@ -94,12 +95,13 @@
     if(m.type==='loginActive'){$('finishLogin').hidden=!m.value;$('login').disabled=m.value;activity.login=!!m.value;renderActivity();}
       if(m.type==='showBrowser' && !$('showBrowser').dataset.initialized){$('showBrowser').checked=!!m.value;$('showBrowser').dataset.initialized='true';}
       if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);}
-    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;}
+    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;renderAttachments();}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
       activity.message=last?last.message:'';renderActivity();
     }
     if(m.type==='error'){activity.message=m.text;renderActivity();}
+    if(m.type==='attached'&&Array.isArray(m.items)){for(const it of m.items)addAttachment(it);}
   });
     // Editable model combobox: pick a preset from the dropdown or type any provider/model.
     const modelInput=$('model'), modelList=$('modelList'), modelToggle=$('modelToggle'), modelCombo=$('modelCombo');
@@ -130,7 +132,75 @@
     modelInput.addEventListener('input',()=>{if(!modelList.hidden)highlightModel();});
     modelCombo.addEventListener('focusout',e=>{if(!modelCombo.contains(e.relatedTarget))setModelOpen(false);});
     document.addEventListener('mousedown',e=>{if(!modelCombo.contains(e.target))setModelOpen(false);});
-  form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked});prompt.value='';});
+  // Additional prompt attachments: paste an image, drag and drop images/files, or pick files.
+  const MAX_BYTES=50*1024*1024, IMAGE_EXT={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp','image/bmp':'bmp'};
+  const attachList=$('attachments');
+  let attachments=[], attachSeq=0;
+  function formatSize(n){return n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B';}
+  function addAttachment(it){
+    if(it.kind==='path'&&attachments.some(a=>a.kind==='path'&&a.path===it.path))return;
+    attachments.push({...it,id:++attachSeq});renderAttachments();
+  }
+  function renderAttachments(){
+    attachList.replaceChildren();attachList.hidden=!attachments.length;
+    const busy=$('send').disabled;
+    $('attach').disabled=busy;
+    for(const a of attachments){
+      const li=document.createElement('li');li.className='attachment';li.title=a.path||a.name;
+      if(a.preview){const img=document.createElement('img');img.src=a.preview;img.alt='';li.append(img);}
+      else li.append(span('attachment-icon','\u{1F4CE}'));
+      li.append(span('attachment-name',a.name));
+      if(typeof a.size==='number')li.append(span('attachment-size',formatSize(a.size)));
+      const rm=document.createElement('button');rm.type='button';rm.className='attachment-remove';rm.textContent='\u00d7';rm.disabled=busy;
+      rm.setAttribute('aria-label','Remove '+a.name);
+      rm.addEventListener('click',()=>{attachments=attachments.filter(x=>x.id!==a.id);renderAttachments();});
+      li.append(rm);attachList.append(li);
+    }
+  }
+  function readFile(file,name){
+    if(file.size>MAX_BYTES){activity.message='Attachment is larger than 50 MB: '+name;renderActivity();return;}
+    const reader=new FileReader();
+    reader.onload=()=>{
+      const url=String(reader.result||''), comma=url.indexOf(',');
+      if(comma<0)return;
+      addAttachment({kind:'data',name,size:file.size,data:url.slice(comma+1),preview:/^image\//.test(file.type)?url:''});
+    };
+    reader.onerror=()=>{activity.message='Could not read attachment: '+name;renderActivity();};
+    reader.readAsDataURL(file);
+  }
+  function stamp(){const d=new Date(),p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
+  function addFiles(files,pasted){
+    let k=0;
+    for(const f of files){
+      if(!f)continue;
+      // Clipboard images usually arrive as a generic "image.png"; give them unique names.
+      const name=pasted&&/^image\//.test(f.type)?'pasted-image-'+stamp()+'-'+(++k)+'.'+(IMAGE_EXT[f.type]||'png'):(f.name||'attachment');
+      readFile(f,name);
+    }
+  }
+  prompt.addEventListener('paste',e=>{
+    if(prompt.disabled||!e.clipboardData)return;
+    const files=[...e.clipboardData.items].filter(i=>i.kind==='file').map(i=>i.getAsFile()).filter(Boolean);
+    if(!files.length)return; // ordinary text paste
+    e.preventDefault();addFiles(files,true);
+  });
+  let dragDepth=0;
+  form.addEventListener('dragenter',e=>{e.preventDefault();if(++dragDepth===1&&!prompt.disabled)form.classList.add('dragging');});
+  form.addEventListener('dragleave',()=>{if(--dragDepth<=0){dragDepth=0;form.classList.remove('dragging');}});
+  form.addEventListener('dragover',e=>{e.preventDefault();if(e.dataTransfer)e.dataTransfer.dropEffect=prompt.disabled?'none':'copy';});
+  form.addEventListener('drop',e=>{
+    e.preventDefault();dragDepth=0;form.classList.remove('dragging');
+    if(prompt.disabled||!e.dataTransfer)return;
+    const files=[...(e.dataTransfer.files||[])];
+    if(files.length){addFiles(files,false);return;}
+    // Drops from the VS Code Explorer provide URIs instead of file contents.
+    const raw=e.dataTransfer.getData('text/uri-list')||'';
+    let list=raw.split(/\r?\n/).map(u=>u.trim()).filter(u=>u&&!u.startsWith('#'));
+    if(!list.length){try{const v=JSON.parse(e.dataTransfer.getData('application/vnd.code.uri-list')||'[]');if(Array.isArray(v))list=v.map(String);}catch(_){}}
+    if(list.length)vscode.postMessage({type:'attachUris',uris:list});
+  });
+  $('attach').addEventListener('click',()=>vscode.postMessage({type:'pickAttachments'}));
+  form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked,attachments:attachments.map(a=>a.kind==='path'?{kind:'path',path:a.path,name:a.name}:{kind:'data',name:a.name,data:a.data})});prompt.value='';attachments=[];renderAttachments();});
   $('cancel').addEventListener('click',()=>vscode.postMessage({type:'cancel'}));
   $('login').addEventListener('click',()=>vscode.postMessage({type:'login'}));
     $('finishLogin').addEventListener('click',()=>vscode.postMessage({type:'finishLogin'}));
