@@ -177,35 +177,84 @@ def selectors_from_env():
     }
 
 
-def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000, require_name: bool = True):
+# Hard indicators: real upload progress. Soft indicators: generic spinners/progress
+# test ids that Copilot may keep on screen (e.g. image thumbnail placeholders).
+BUSY_STRICT = '[role="progressbar"]:visible, [aria-busy="true"]:visible'
+BUSY_SOFT = '[data-testid*="progress" i]:visible, [class*="spinner" i]:visible'
+THUMBNAILS = 'img[src^="blob:"]:visible, img[src^="data:"]:visible'
+
+
+def _count(page, selector):
+    try:
+        return page.locator(selector).count()
+    except Exception:
+        return 0
+
+
+def attachment_snapshot(page):
+    """Indicator counts taken before attaching, so pre-existing ones are not mistaken for this upload."""
+    return {"strict": _count(page, BUSY_STRICT), "soft": _count(page, BUSY_SOFT),
+            "thumbs": _count(page, THUMBNAILS)}
+
+
+def _name_visible(page, filename):
+    """Match the file name as visible text or in chip attributes (aria-label/title/alt)."""
+    keys = [filename, filename[:14]]
+    for key in keys:
+        try:
+            loc = page.get_by_text(key, exact=False)
+            if any(loc.nth(i).is_visible() for i in range(loc.count())):
+                return True
+        except Exception:
+            pass
+        quoted = key.replace("\\", "\\\\").replace('"', '\\"')
+        try:
+            loc = page.locator(f'[aria-label*="{quoted}" i], [title*="{quoted}" i], img[alt*="{quoted}" i]')
+            if any(loc.nth(i).is_visible() for i in range(loc.count())):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000, require_name: bool = True,
+                              baseline=None):
     """Wait for the current draft's attachment to finish uploading (up to 3 min).
 
-    Image attachments may render as thumbnails without a visible file name, so
-    require_name=False only waits for upload progress indicators to clear.
+    The attachment is recognized by its file name (text or chip attributes) or, for
+    images (require_name=False), by a new thumbnail or a short grace period. Upload is
+    settled when progress indicators are no higher than before the attachment was added;
+    persistent generic spinners on an already recognized image are ignored after a grace period.
     """
     filename = source_txt.name
-    deadline = time.monotonic() + timeout_ms / 1000
+    baseline = baseline or {"strict": 0, "soft": 0, "thumbs": 0}
+    started = time.monotonic()
+    deadline = started + timeout_ms / 1000
     stable_since = None
+    recognized_at = None
+    last_update = started
     while time.monotonic() < deadline:
-        visible = not require_name
-        for locator in (page.get_by_text(filename, exact=False),
-                        page.get_by_text(filename[:14], exact=False)):
-            try:
-                visible = any(locator.nth(i).is_visible() for i in range(locator.count()))
-            except Exception:
-                pass
-            if visible:
-                break
-        # The persistent OneDrive informational banner is not upload progress.
-        busy = page.locator('[role="progressbar"]:visible, [aria-busy="true"]:visible, '
-                            '[data-testid*="progress" i]:visible, [class*="spinner" i]:visible')
-        if visible and busy.count() == 0:
+        now = time.monotonic()
+        if recognized_at is None:
+            if _name_visible(page, filename):
+                recognized_at = now
+            elif not require_name and (_count(page, THUMBNAILS) > baseline["thumbs"] or now - started >= 10):
+                recognized_at = now
+        strict = _count(page, BUSY_STRICT)
+        soft = _count(page, BUSY_SOFT)
+        settled = (recognized_at is not None and strict <= baseline["strict"]
+                   and (soft <= baseline["soft"] or now - recognized_at >= 30))
+        if settled:
             if stable_since is None:
-                stable_since = time.monotonic()
-            if time.monotonic() - stable_since >= 5:
+                stable_since = now
+            if now - stable_since >= 5:
                 return
         else:
             stable_since = None
+        if now - last_update >= 15:
+            state = "uploading" if recognized_at is not None else "waiting for attachment chip"
+            emit_status("uploading", f"Waiting for {filename} ({state}, {int(now - started)}s)...")
+            last_update = now
         page.wait_for_timeout(500)
     raise SystemExit(f"Attachment upload did not settle within {timeout_ms // 1000}s: {filename}")
 
@@ -425,14 +474,18 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         emit_status("model", "Checking Copilot model selection...")
         select_model(page, args.model, sel)
         emit_status("uploading", "Attaching repository archive...")
+        baseline = attachment_snapshot(page)
         attach_file(page, sel, source_txt)
         # Do not submit until the upload belongs to this same draft message.
         emit_status("uploading", "Waiting for attachment upload to finish...")
-        wait_for_attachment_ready(page, source_txt)
+        wait_for_attachment_ready(page, source_txt, baseline=baseline)
         for index, extra in enumerate(attachments, 1):
             emit_status("uploading", f"Attaching additional file {index}/{len(attachments)}: {extra.name}...")
+            baseline = attachment_snapshot(page)
             attach_file(page, sel, extra)
-            wait_for_attachment_ready(page, extra, require_name=extra.suffix.lower() not in IMAGE_SUFFIXES)
+            wait_for_attachment_ready(page, extra, require_name=extra.suffix.lower() not in IMAGE_SUFFIXES,
+                                      baseline=baseline)
+            emit_status("uploading", f"Additional file {index}/{len(attachments)} attached: {extra.name}")
         emit_status("prompt", "Preparing modification request...")
         composer = page.locator(sel["composer"]).last
         composer.wait_for(state="visible", timeout=60000)
