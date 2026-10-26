@@ -533,7 +533,7 @@ def temporary_chat_active(page, sel):
 
 
 def enable_temporary_chat(page, sel, timeout_seconds=30):
-    """Turn on Copilot's Temporary chat (top-right toggle) after model selection, without toggling it off."""
+    """Turn on Copilot's Temporary chat (top-right toggle) before model selection, without toggling it off."""
     if temporary_chat_active(page, sel):
         return
     button = page.locator(sel["temporary_chat"]).first
@@ -632,12 +632,13 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         emit_status("browser", "Opening Copilot Chat...")
         page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
-        emit_status("model", "Checking Copilot model selection...")
-        select_model(page, args.model, sel)
+        # Temporary chat must be enabled first: switching to it resets the model selection.
         if args.temporary_chat:
             emit_status("temporary", "Enabling Temporary chat...")
             enable_temporary_chat(page, sel)
             emit_status("temporary", "Temporary chat enabled.")
+        emit_status("model", "Checking Copilot model selection...")
+        select_model(page, args.model, sel)
         emit_status("uploading", "Attaching repository archive...")
         # Do not submit until the upload belongs to this same draft message.
         attach_file(page, sel, source_txt)
@@ -720,7 +721,7 @@ def main():
     fp.add_argument("--headless", action="store_true", help="Deprecated; browser is already hidden by default")
     fp.add_argument("--allow-dirty", action="store_true")
     fp.add_argument("--temporary-chat", dest="temporary_chat", action="store_true", default=True,
-                    help="Enable Copilot Temporary chat after selecting the model (default: enabled)")
+                    help="Enable Copilot Temporary chat before selecting the model (default: enabled)")
     fp.add_argument("--no-temporary-chat", dest="temporary_chat", action="store_false",
                     help="Do not enable Temporary chat")
     fp.add_argument("--attach", action="append", default=[], metavar="PATH",

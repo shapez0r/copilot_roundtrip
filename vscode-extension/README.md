@@ -27,6 +27,6 @@ A sidebar prompt-and-response interface for the repository-wide `copilot_repo_ro
 
 Round-trip upload names use local timestamps such as `repo-20261024-191212.zip.txt`. Temporary source ZIPs, downloaded files and rollback backups are deleted when the run finishes (including errors). The applied repository changes remain in the working tree.
 
-The **Show browser** checkbox beside **Sign in** controls subsequent modification runs; it is off by default. The **Temporary chat** checkbox (on by default) enables Copilot's Temporary chat right after the model is selected; untick it to use a normal saved chat. The upload can take up to 180 seconds to settle; the send action retries for up to 120 seconds.
+The **Show browser** checkbox beside **Sign in** controls subsequent modification runs; it is off by default. The **Temporary chat** checkbox (on by default) enables Copilot's Temporary chat before the model is selected; untick it to use a normal saved chat. The upload can take up to 180 seconds to settle; the send action retries for up to 120 seconds.
 
 During `fix`, the script streams `ROUNDTRIP_STATUS:` JSON lines to stderr for each execution phase (including periodic wait updates); stdout remains the final JSON result. The VS Code sidebar displays these updates live in **Execution activity** as a single rotating status line with a spinner while work is in progress.

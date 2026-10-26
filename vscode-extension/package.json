@@ -88,7 +88,7 @@
         "copilotRoundtrip.temporaryChat": {
           "type": "boolean",
           "default": true,
-          "description": "Enable Copilot Temporary chat after selecting the model (initial state of the sidebar checkbox)."
+          "description": "Enable Copilot Temporary chat before selecting the model (initial state of the sidebar checkbox)."
         }
       }
     }

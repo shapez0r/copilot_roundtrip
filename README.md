@@ -66,7 +66,7 @@ The tool requires a clean working tree by default. `--allow-dirty` bypasses this
 
 1. Confirms the target is a Git worktree and checks cleanliness unless `--allow-dirty` is set.
 2. Runs `git archive --format=zip HEAD`, saving ZIP bytes under a `.zip.txt` name for attachment.
-3. Opens Copilot Chat, optionally selects the model, enables **Temporary chat** (unless `--no-temporary-chat`), uploads the archive (followed by any `--attach` files), waits for an attachment chip and bounded progress checks, then submits the repair request.
+3. Opens Copilot Chat, enables **Temporary chat** (unless `--no-temporary-chat`), optionally selects the model, uploads the archive (followed by any `--attach` files), waits for an attachment chip and bounded progress checks, then submits the repair request.
 4. Waits for a downloadable response; if none appears before the timeout, saves a screenshot and HTML diagnostics.
 5. Checks that the download is a ZIP with files, rejects traversal paths, `.git` entries and Unix symlinks, and refuses a byte-identical archive.
 6. Backs up all existing worktree files (including untracked files), clears the worktree except `.git`, then copies the complete extracted repository into place. On an apply failure, it restores the backup. It prints Git status, diff statistics, and the latest Copilot assistant chat response (when available) in the JSON output.
@@ -101,7 +101,7 @@ For `fix`, options include:
 - `--timeout SECONDS` — download wait timeout (default: `900`).
 - `--headless` — run Chromium without a visible window (requires an existing signed-in profile).
 - `--allow-dirty` — allow a dirty worktree (use with caution).
-- `--no-temporary-chat` — do not enable Copilot **Temporary chat**. By default, Temporary chat is enabled right after the model is selected (`--temporary-chat`).
+- `--no-temporary-chat` — do not enable Copilot **Temporary chat**. By default, Temporary chat is enabled before the model is selected (enabling it resets the model selection) (`--temporary-chat`).
 - `--attach PATH` — additional file or picture to attach to the prompt; repeat for several files.
 
 Use `python vscode-extension/scripts/copilot_repo_roundtrip.py --help` and `python vscode-extension/scripts/copilot_repo_roundtrip.py fix --help` for the CLI help.
