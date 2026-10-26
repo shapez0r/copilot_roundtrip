@@ -174,6 +174,8 @@ def selectors_from_env():
         "send": os.getenv("COPILOT_SEND", 'button[aria-label*="Send" i], button[data-testid*="send" i]'),
         "download": os.getenv("COPILOT_DOWNLOAD", 'a[download], a[href*="download" i], button:has-text("Download")'),
         "model_button": os.getenv("COPILOT_MODEL_BUTTON", 'button[aria-label*="model" i], button[aria-haspopup="menu"]:has-text("Auto")'),
+        "temporary_chat": os.getenv("COPILOT_TEMPORARY_CHAT", 'button[aria-label*="temporary" i], [role="button"][aria-label*="temporary" i], '
+                                    'button[title*="temporary" i], button[data-testid*="temporary" i]'),
     }
 
 
@@ -502,6 +504,54 @@ def select_model(page, model: str, sel):
     option.click(); page.wait_for_timeout(1000)
 
 
+def temporary_chat_active(page, sel):
+    """True when Copilot shows the temporary chat state (toggle pressed, heading or composer hint)."""
+    import re
+    try:
+        toggles = page.locator(sel["temporary_chat"])
+        for i in range(toggles.count()):
+            node = toggles.nth(i)
+            if not node.is_visible():
+                continue
+            for attr in ("aria-pressed", "aria-checked", "aria-selected"):
+                if (node.get_attribute(attr) or "").lower() == "true":
+                    return True
+            label = (node.get_attribute("aria-label") or node.get_attribute("title") or "").lower()
+            if re.search(r"\b(exit|leave|end|turn off|disable|stop)\b", label):
+                return True
+    except Exception:
+        pass
+    for locator in (page.get_by_text(re.compile(r"^\s*Temporary chat\s*$", re.I)),
+                    page.locator('[placeholder*="Temporarily" i], [aria-placeholder*="Temporarily" i], '
+                                 '[data-placeholder*="Temporarily" i], [aria-label*="Temporarily" i]')):
+        try:
+            if any(locator.nth(i).is_visible() for i in range(locator.count())):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def enable_temporary_chat(page, sel, timeout_seconds=30):
+    """Turn on Copilot's Temporary chat (top-right toggle) after model selection, without toggling it off."""
+    if temporary_chat_active(page, sel):
+        return
+    button = page.locator(sel["temporary_chat"]).first
+    try:
+        button.wait_for(state="visible", timeout=timeout_seconds * 1000)
+    except Exception:
+        raise SystemExit("Temporary chat button was not found. Override COPILOT_TEMPORARY_CHAT, "
+                         "or run with --no-temporary-chat.")
+    button.click()
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(500)
+        if temporary_chat_active(page, sel):
+            page.wait_for_timeout(500)
+            return
+    raise SystemExit("Temporary chat could not be enabled (Copilot did not show the temporary chat state).")
+
+
 def open_context(p, profile: Path, headless: bool, downloads: Path):
     return p.chromium.launch_persistent_context(
         user_data_dir=str(profile), headless=headless, accept_downloads=True,
@@ -584,6 +634,10 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
         emit_status("model", "Checking Copilot model selection...")
         select_model(page, args.model, sel)
+        if args.temporary_chat:
+            emit_status("temporary", "Enabling Temporary chat...")
+            enable_temporary_chat(page, sel)
+            emit_status("temporary", "Temporary chat enabled.")
         emit_status("uploading", "Attaching repository archive...")
         # Do not submit until the upload belongs to this same draft message.
         attach_file(page, sel, source_txt)
@@ -665,6 +719,10 @@ def main():
     fp.add_argument("--show-browser", action="store_true", help="Show Chromium during fixes (default: invisible)")
     fp.add_argument("--headless", action="store_true", help="Deprecated; browser is already hidden by default")
     fp.add_argument("--allow-dirty", action="store_true")
+    fp.add_argument("--temporary-chat", dest="temporary_chat", action="store_true", default=True,
+                    help="Enable Copilot Temporary chat after selecting the model (default: enabled)")
+    fp.add_argument("--no-temporary-chat", dest="temporary_chat", action="store_false",
+                    help="Do not enable Temporary chat")
     fp.add_argument("--attach", action="append", default=[], metavar="PATH",
                     help="Additional file (e.g. a picture) to attach to the prompt; repeat for several files")
     fp.set_defaults(fn=cmd_fix)

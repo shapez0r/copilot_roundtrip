@@ -144,8 +144,9 @@
     if(m.type==='model' && !$('model').dataset.initialized){$('model').value=m.value||'GPT/GPT-6';$('model').dataset.initialized='true';}
     if(m.type==='loginActive'){$('finishLogin').hidden=!m.value;$('login').disabled=m.value;activity.login=!!m.value;renderActivity();}
       if(m.type==='showBrowser' && !$('showBrowser').dataset.initialized){$('showBrowser').checked=!!m.value;$('showBrowser').dataset.initialized='true';}
+      if(m.type==='temporaryChat' && !$('temporaryChat').dataset.initialized){$('temporaryChat').checked=m.value!==false;$('temporaryChat').dataset.initialized='true';}
       if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);}
-    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;renderAttachments();}
+    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;$('temporaryChat').disabled=m.value;renderAttachments();}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
       activity.message=last?last.message:'';renderActivity();
@@ -264,7 +265,7 @@
   document.addEventListener('dragover',e=>e.preventDefault());
   document.addEventListener('drop',e=>{if(!form.contains(e.target))e.preventDefault();});
   $('attach').addEventListener('click',()=>vscode.postMessage({type:'pickAttachments'}));
-  form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked,attachments:attachments.map(a=>a.kind==='path'?{kind:'path',path:a.path,name:a.name}:{kind:'data',name:a.name,data:a.data})});prompt.value='';attachments=[];renderAttachments();});
+  form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked,temporaryChat:$('temporaryChat').checked,attachments:attachments.map(a=>a.kind==='path'?{kind:'path',path:a.path,name:a.name}:{kind:'data',name:a.name,data:a.data})});prompt.value='';attachments=[];renderAttachments();});
   $('cancel').addEventListener('click',()=>vscode.postMessage({type:'cancel'}));
   $('login').addEventListener('click',()=>vscode.postMessage({type:'login'}));
     $('finishLogin').addEventListener('click',()=>vscode.postMessage({type:'finishLogin'}));

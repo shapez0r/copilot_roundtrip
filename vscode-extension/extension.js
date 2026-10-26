@@ -26,6 +26,7 @@ function buildArgs(script, request, repo, cfg) {
   if (cfg.profilePath) args.push('--profile', cfg.profilePath);
   args.push('fix', request, '--repo', repo, '--model', cfg.model || 'GPT/GPT-6', '--timeout', String(cfg.timeout || 900));
   if (cfg.showBrowser) args.push('--show-browser');
+  if (cfg.temporaryChat === false) args.push('--no-temporary-chat');
   if (cfg.allowDirty) args.push('--allow-dirty');
   if (cfg.workDir) args.push('--work-dir', cfg.workDir);
   if (cfg.backupDir) args.push('--backup-dir', cfg.backupDir);
@@ -99,7 +100,7 @@ function materializeAttachments(items, makeDir) {
 function config() {
   const c = vscode.workspace.getConfiguration('copilotRoundtrip');
   return {pythonPath:c.get('pythonPath','python'), model:c.get('model','GPT/GPT-6'), timeout:c.get('timeout',900),
-    showBrowser:c.get('showBrowser',false), allowDirty:c.get('allowDirty',false), profilePath:c.get('profilePath',''),
+    showBrowser:c.get('showBrowser',false), temporaryChat:c.get('temporaryChat',true), allowDirty:c.get('allowDirty',false), profilePath:c.get('profilePath',''),
     workDir:c.get('workDir',''), backupDir:c.get('backupDir','')};
 }
 // The repository is always the current workspace: the folder of the active editor, else the first local folder.
@@ -165,12 +166,12 @@ class ChatProvider {
     const n=nonce();
     const css=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.css'));
     const js=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.js'));
-    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src data:; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes... (paste or drop images/files to attach)" required></textarea><div class="attach-bar"><button id="attach" type="button" title="Attach files to the prompt">Attach files...</button><span class="attach-hint">Paste an image, or drag and drop images/files here (hold Shift while dropping).</span></div><ul id="attachments" class="attachments" aria-label="Attached files" hidden></ul><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
+    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src data:; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="temporaryChat" title="Enable Copilot Temporary chat after selecting the model"><input id="temporaryChat" type="checkbox" checked> Temporary chat</label><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes... (paste or drop images/files to attach)" required></textarea><div class="attach-bar"><button id="attach" type="button" title="Attach files to the prompt">Attach files...</button><span class="attach-hint">Paste an image, or drag and drop images/files here (hold Shift while dropping).</span></div><ul id="attachments" class="attachments" aria-label="Attached files" hidden></ul><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
     w.onDidReceiveMessage(async m=>{
       if(m.type==='ready') this.refresh();
       if(m.type==='login') await vscode.commands.executeCommand('copilotRoundtrip.login');
       if(m.type==='finishLogin') this.finishLogin();
-      if(m.type==='run') await this.run(m.prompt,m.model,m.showBrowser,m.attachments);
+      if(m.type==='run') await this.run(m.prompt,m.model,m.showBrowser,m.attachments,m.temporaryChat);
       if(m.type==='pickAttachments') await this.pickAttachments();
       if(m.type==='attachUris' && Array.isArray(m.uris)) this.attachUris(m.uris);
       if(m.type==='cancel') this.cancel();
@@ -187,7 +188,7 @@ class ChatProvider {
   }
   refresh() {
     this.post({type:'busy',value:this.busy});
-    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'loginActive',value:!!this.loginProc});
+    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'temporaryChat',value:config().temporaryChat}); this.post({type:'loginActive',value:!!this.loginProc});
   }
   async openResult(p) {
     // Only open ZIPs emitted by successful runs, never arbitrary paths from the webview.
@@ -230,7 +231,7 @@ class ChatProvider {
   }
   finishLogin() { if(this.loginProc && this.loginProc.stdin.writable) { this.updateProgress('login','Finishing browser sign-in...'); this.loginProc.stdin.write('\n'); } }
   cancel() { if(this.proc && !this.proc.killed) { this.proc.kill(); this.updateProgress('cancelled','Stopping the script...'); } }
-  async run(prompt, model, showBrowser, attachments) {
+  async run(prompt, model, showBrowser, attachments, temporaryChat) {
     if(this.busy) return;
     if(typeof prompt!=='string' || !prompt.trim()) { this.post({type:'error',text:'Enter a prompt first.'}); return; }
     const repo=currentRepo();
@@ -239,6 +240,7 @@ class ChatProvider {
     cfg.model=typeof model==='string' ? model.trim() : '';
       if(!/^[^/\s]+\/[^/]+$/.test(cfg.model)) { this.updateProgress('error','Enter a model as provider/model (for example GPT/GPT-6).'); return; }
       cfg.showBrowser=showBrowser===true;
+      cfg.temporaryChat=temporaryChat!==false;
     const script=path.join(this.context.extensionPath,'scripts','copilot_repo_roundtrip.py');
     this.busy=true; this.statusHistory=[]; this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
     const attachmentNames=(Array.isArray(attachments)?attachments:[]).filter(a=>a&&typeof a==='object').map(a=>String(a.name||(a.path?path.basename(a.path):'file')));

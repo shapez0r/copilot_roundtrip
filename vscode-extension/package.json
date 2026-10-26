@@ -84,6 +84,11 @@
           "type": "boolean",
           "default": false,
           "description": "Show the browser during repository modifications. Sign-in always opens a visible browser."
+        },
+        "copilotRoundtrip.temporaryChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Copilot Temporary chat after selecting the model (initial state of the sidebar checkbox)."
         }
       }
     }
