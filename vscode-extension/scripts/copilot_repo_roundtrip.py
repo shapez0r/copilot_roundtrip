@@ -8,7 +8,7 @@ validates the returned archive, and replaces the worktree after a backup.
 UI automation is unsupported and selectors can change. Run `login` once, then `fix`.
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, zipfile
+import argparse, atexit, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, zipfile
 from pathlib import Path, PurePosixPath
 
 DEFAULT_URL = "https://m365.cloud.microsoft/chat/"
@@ -116,6 +116,130 @@ def merge_live(prev_blocks, prev_answers, blocks, answers):
             texts[after] = text
     merged_answers = [{"after": after, "text": texts[after]} for after in sorted(texts) if texts[after]]
     return merged_blocks, merged_answers
+
+
+# Quit handling: pressing Q in the terminal, or a "q" line on stdin (sent by the VS Code
+# extension's Cancel button), requests a quit. Once the prompt may have been submitted, the
+# Copilot response is stopped (Stop button clicked) before the browser closes and the script exits.
+QUIT_EXIT_CODE = 130
+_quit_event = threading.Event()
+
+
+class QuitRequested(Exception):
+    "Raised at a safe point after Q / Cancel was requested."
+
+
+def quit_requested():
+    return _quit_event.is_set()
+
+
+def raise_if_quit():
+    if _quit_event.is_set():
+        raise QuitRequested()
+
+
+def _quit_key(ch):
+    return isinstance(ch, str) and ch.strip().lower() == "q"
+
+
+def start_quit_listener():
+    "Watch stdin for Q (terminal key press, no Enter needed) or a q/quit/cancel line (pipe)."
+    stdin = sys.stdin
+    if stdin is None:
+        return False
+    try:
+        tty_input = stdin.isatty()
+    except Exception:
+        tty_input = False
+
+    def windows_console():
+        import msvcrt
+        while not _quit_event.is_set():
+            if msvcrt.kbhit():
+                if _quit_key(msvcrt.getwch()):
+                    _quit_event.set()
+            else:
+                time.sleep(0.1)
+
+    def posix_terminal():
+        import select, termios, tty
+        fd = stdin.fileno()
+        old = termios.tcgetattr(fd)
+        restore = lambda: termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        atexit.register(restore)
+        tty.setcbreak(fd)
+        try:
+            while not _quit_event.is_set():
+                ready, _, _ = select.select([fd], [], [], 0.2)
+                if ready and _quit_key(os.read(fd, 1).decode("utf-8", "ignore")):
+                    _quit_event.set()
+        finally:
+            restore()
+
+    def pipe_lines():
+        while not _quit_event.is_set():
+            line = stdin.readline()
+            if not line:
+                return  # EOF: no quit requests can arrive any more.
+            if line.strip().lower() in ("q", "quit", "cancel", "stop"):
+                _quit_event.set()
+
+    def worker():
+        try:
+            if tty_input and os.name == "nt":
+                windows_console()
+            elif tty_input:
+                posix_terminal()
+            else:
+                pipe_lines()
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, name="quit-listener", daemon=True).start()
+    return tty_input
+
+
+def pause(page, ms):
+    "page.wait_for_timeout that returns early (raising QuitRequested) when a quit is requested."
+    end = time.monotonic() + ms / 1000
+    while True:
+        raise_if_quit()
+        left = end - time.monotonic()
+        if left <= 0:
+            return
+        page.wait_for_timeout(min(250, max(1, int(left * 1000))))
+
+
+def stop_generation(page, sel, timeout_seconds=15):
+    "Click Copilot's Stop button for the running response and wait until it is gone."
+    stop = page.locator(sel["stop"])
+
+    def visible_buttons():
+        try:
+            return [stop.nth(i) for i in range(stop.count()) if stop.nth(i).is_visible()]
+        except Exception:
+            return []
+
+    started = time.monotonic()
+    clicked, last_click = False, 0.0
+    while time.monotonic() - started < timeout_seconds:
+        buttons = visible_buttons()
+        now = time.monotonic()
+        if not buttons:
+            if clicked:
+                return True
+            # The Stop button can take a moment to replace Send right after submission.
+            if now - started >= 3:
+                return False
+        elif not clicked or now - last_click >= 3:
+            try:
+                buttons[-1].click(timeout=3000)
+                clicked, last_click = True, now
+                emit_status("cancelled", "Clicked Stop in Copilot Chat.")
+            except Exception:
+                pass
+        page.wait_for_timeout(300)
+    return clicked
 
 
 def wait_for_ui(page, ms=UI_SETTLE_MS):
@@ -444,6 +568,9 @@ def selectors_from_env():
         "send": os.getenv("COPILOT_SEND", 'button[aria-label*="Send" i], button[data-testid*="send" i]'),
         "download": os.getenv("COPILOT_DOWNLOAD", 'a[download], a[href*="download" i], button:has-text("Download")'),
         "model_button": os.getenv("COPILOT_MODEL_BUTTON", 'button[aria-label*="model" i], button[aria-haspopup="menu"]:has-text("Auto")'),
+        # Stop button shown while Copilot generates a response (clicked on Q / Cancel before quitting).
+        "stop": os.getenv("COPILOT_STOP", 'button[aria-label*="Stop" i]:not([aria-label*="temporary" i]), '
+                          'button[title*="Stop" i]:not([title*="temporary" i]), button[data-testid*="stop" i]'),
         "temporary_chat": os.getenv("COPILOT_TEMPORARY_CHAT", 'button[aria-label*="temporary" i], [role="button"][aria-label*="temporary" i], '
                                     'button[title*="temporary" i], button[data-testid*="temporary" i]'),
         # Optional override for reasoning headers; default detects "Reasoning"/"Reasoned for Ns" toggles.
@@ -554,7 +681,7 @@ def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000, 
             state = "uploading" if recognized_at is not None else "waiting for attachment chip"
             emit_status("uploading", f"Waiting for {filename} ({state}, {int(now - started)}s)...")
             last_update = now
-        page.wait_for_timeout(500)
+        pause(page, 500)
     if recognized_at is None:
         return False
     raise SystemExit(f"Attachment upload did not settle within {timeout_ms // 1000}s: {filename}")
@@ -671,16 +798,19 @@ def send_with_retry(page, composer, send_selector, timeout_seconds=120):
                 pass
         try:
             button = page.locator(send_selector).first
+            raise_if_quit()
             if button.is_visible() and button.is_enabled():
                 button.click(timeout=3000)
             else:
-                page.wait_for_timeout(1500)
+                pause(page, 1500)
                 continue
+        except QuitRequested:
+            raise
         except Exception:
-            page.wait_for_timeout(1500)
+            pause(page, 1500)
             continue
         # Give the UI time to acknowledge before attempting another click.
-        page.wait_for_timeout(2500)
+        pause(page, 2500)
         try:
             if not composer.input_value(timeout=2000).strip():
                 return
@@ -864,6 +994,8 @@ def cmd_fix(args):
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
     parse_model(args.model)
     args.attachments = resolve_attachments(args.attach)
+    if start_quit_listener():
+        print("Press Q at any time to stop the Copilot response and quit.", file=sys.stderr, flush=True)
     emit_status("checking", "Checking repository and Git working tree...")
     root = repo_root(Path(args.repo).resolve())
     ensure_clean(root, args.allow_dirty)
@@ -891,107 +1023,129 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
     sel = selectors_from_env()
     downloaded = None
     chat_response = ""
+    raise_if_quit()
     with sync_playwright() as p:
         emit_status("browser", "Launching Copilot browser...")
         ctx = open_context(p, profile, not args.show_browser, work)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        emit_status("browser", "Opening Copilot Chat...")
-        page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
-        wait_for_ui(page)
-        # Temporary chat must be enabled first: switching to it resets the model selection.
-        if args.temporary_chat:
-            emit_status("temporary", "Enabling Temporary chat...")
-            enable_temporary_chat(page, sel)
-            emit_status("temporary", "Temporary chat enabled.")
-        emit_status("model", "Checking Copilot model selection...")
-        select_model(page, args.model, sel)
-        emit_status("uploading", "Attaching repository archive...")
-        # Do not submit until the upload belongs to this same draft message.
-        attach_file(page, sel, source_txt)
-        for index, extra in enumerate(attachments, 1):
-            emit_status("uploading", f"Attaching additional file {index}/{len(attachments)}: {extra.name}...")
-            attach_file(page, sel, extra, require_name=extra.suffix.lower() not in IMAGE_SUFFIXES)
-            emit_status("uploading", f"Additional file {index}/{len(attachments)} attached: {extra.name}")
-        emit_status("prompt", "Preparing modification request...")
-        composer = page.locator(sel["composer"]).last
-        composer.wait_for(state="visible", timeout=60000)
-        composer.fill(prompt)
-        emit_status("prompt", "Submitting request to Copilot...")
-        send_with_retry(page, composer, sel["send"])
-        emit_status("waiting", "Waiting for Copilot to generate a downloadable repository...")
-        # The timeout is an inactivity timeout: it only runs while nothing new appears on screen
-        # (reasoning or response text). Any new output restarts it.
-        idle_limit = args.timeout
-        started = time.monotonic()
-        last_activity = started
-        last_signature = None
-        last_live = None
-        live_blocks, live_answers = [], []
-        seen = set()
-        last_update = started
-        while downloaded is None:
-            now = time.monotonic()
-            signature, blocks, answers = read_screen(page, sel, prompt)
-            if signature is not None and signature != last_signature:
-                if last_signature is not None:
-                    last_activity = now
-                last_signature = signature
-            # Reasoning blocks and intermediate (live) answers are streamed together.
-            if blocks is not None:
-                live_blocks, live_answers = merge_live(live_blocks, live_answers, blocks, answers)
-            live = None if blocks is None else (live_blocks, live_answers)
-            if live is not None and live != last_live:
-                last_live = live
-                last_activity = now if (live_blocks or live_answers) else last_activity
-                emit_reasoning(live_blocks, live_answers)
-            idle = now - last_activity
-            if idle >= idle_limit:
-                break
-            if now - last_update >= 15:
-                emit_status("waiting", f"Still waiting for Copilot response ({int(now - started)}s elapsed, "
-                                       f"no new output for {int(idle)}s of {idle_limit}s allowed)...")
-                last_update = now
-            candidates = page.locator(sel["download"])
-            for i in range(candidates.count() - 1, -1, -1):
-                node = candidates.nth(i)
-                try:
-                    key = (node.get_attribute("href") or "") + (node.inner_text(timeout=2000) or "")
-                except Exception:
-                    continue
-                if key in seen:
-                    continue
-                seen.add(key)
-                try:
-                    with page.expect_download(timeout=15000) as di:
-                        node.click()
-                    d = di.value
-                    downloaded = work / d.suggested_filename
-                    d.save_as(str(downloaded))
+        submitted = False
+        try:
+            emit_status("browser", "Opening Copilot Chat...")
+            page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
+            wait_for_ui(page)
+            # Temporary chat must be enabled first: switching to it resets the model selection.
+            if args.temporary_chat:
+                emit_status("temporary", "Enabling Temporary chat...")
+                enable_temporary_chat(page, sel)
+                emit_status("temporary", "Temporary chat enabled.")
+            emit_status("model", "Checking Copilot model selection...")
+            select_model(page, args.model, sel)
+            emit_status("uploading", "Attaching repository archive...")
+            # Do not submit until the upload belongs to this same draft message.
+            attach_file(page, sel, source_txt)
+            for index, extra in enumerate(attachments, 1):
+                emit_status("uploading", f"Attaching additional file {index}/{len(attachments)}: {extra.name}...")
+                attach_file(page, sel, extra, require_name=extra.suffix.lower() not in IMAGE_SUFFIXES)
+                emit_status("uploading", f"Additional file {index}/{len(attachments)} attached: {extra.name}")
+            emit_status("prompt", "Preparing modification request...")
+            composer = page.locator(sel["composer"]).last
+            composer.wait_for(state="visible", timeout=60000)
+            composer.fill(prompt)
+            emit_status("prompt", "Submitting request to Copilot...")
+            # From here on a response may be running: a quit must click Stop before exiting.
+            submitted = True
+            send_with_retry(page, composer, sel["send"])
+            emit_status("waiting", "Waiting for Copilot to generate a downloadable repository...")
+            # The timeout is an inactivity timeout: it only runs while nothing new appears on screen
+            # (reasoning or response text). Any new output restarts it.
+            idle_limit = args.timeout
+            started = time.monotonic()
+            last_activity = started
+            last_signature = None
+            last_live = None
+            live_blocks, live_answers = [], []
+            seen = set()
+            last_update = started
+            while downloaded is None:
+                raise_if_quit()
+                now = time.monotonic()
+                signature, blocks, answers = read_screen(page, sel, prompt)
+                if signature is not None and signature != last_signature:
+                    if last_signature is not None:
+                        last_activity = now
+                    last_signature = signature
+                # Reasoning blocks and intermediate (live) answers are streamed together.
+                if blocks is not None:
+                    live_blocks, live_answers = merge_live(live_blocks, live_answers, blocks, answers)
+                live = None if blocks is None else (live_blocks, live_answers)
+                if live is not None and live != last_live:
+                    last_live = live
+                    last_activity = now if (live_blocks or live_answers) else last_activity
+                    emit_reasoning(live_blocks, live_answers)
+                idle = now - last_activity
+                if idle >= idle_limit:
                     break
-                except PlaywrightTimeout:
-                    continue
-                except Exception:
-                    continue
+                if now - last_update >= 15:
+                    emit_status("waiting", f"Still waiting for Copilot response ({int(now - started)}s elapsed, "
+                                           f"no new output for {int(idle)}s of {idle_limit}s allowed)...")
+                    last_update = now
+                candidates = page.locator(sel["download"])
+                for i in range(candidates.count() - 1, -1, -1):
+                    node = candidates.nth(i)
+                    try:
+                        key = (node.get_attribute("href") or "") + (node.inner_text(timeout=2000) or "")
+                    except Exception:
+                        continue
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    try:
+                        with page.expect_download(timeout=15000) as di:
+                            node.click()
+                        d = di.value
+                        downloaded = work / d.suggested_filename
+                        d.save_as(str(downloaded))
+                        break
+                    except PlaywrightTimeout:
+                        continue
+                    except Exception:
+                        continue
+                if downloaded is None:
+                    pause(page, 1500)
             if downloaded is None:
-                page.wait_for_timeout(1500)
-        if downloaded is None:
-            page.screenshot(path=str(work / "copilot-timeout.png"), full_page=True)
-            (work / "copilot-timeout.html").write_text(page.content(), encoding="utf-8")
+                page.screenshot(path=str(work / "copilot-timeout.png"), full_page=True)
+                (work / "copilot-timeout.html").write_text(page.content(), encoding="utf-8")
+                ctx.close()
+                raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s. Temporary diagnostics were removed with the run directory")
+            # Final snapshot of the finished response, merged so nothing already shown is lost.
+            page.wait_for_timeout(1000)
+            _, blocks, answers = read_screen(page, sel, prompt)
+            if blocks is not None:
+                final_live = merge_live(live_blocks, live_answers, blocks, answers)
+                if final_live != (live_blocks, live_answers):
+                    live_blocks, live_answers = final_live
+                    emit_reasoning(live_blocks, live_answers)
+            chat_response = strip_speaker_label(read_chat_response(page))
+            live_text = "\n\n".join(a["text"] for a in live_answers)
+            if len(chat_response) < len(live_text):
+                chat_response = live_text
             ctx.close()
-            raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s. Temporary diagnostics were removed with the run directory")
-        # Final snapshot of the finished response, merged so nothing already shown is lost.
-        page.wait_for_timeout(1000)
-        _, blocks, answers = read_screen(page, sel, prompt)
-        if blocks is not None:
-            final_live = merge_live(live_blocks, live_answers, blocks, answers)
-            if final_live != (live_blocks, live_answers):
-                live_blocks, live_answers = final_live
-                emit_reasoning(live_blocks, live_answers)
-        chat_response = strip_speaker_label(read_chat_response(page))
-        live_text = "\n\n".join(a["text"] for a in live_answers)
-        if len(chat_response) < len(live_text):
-            chat_response = live_text
-        ctx.close()
+        except QuitRequested:
+            if submitted:
+                emit_status("cancelled", "Quit requested: clicking Stop on the Copilot response...")
+                if not stop_generation(page, sel):
+                    emit_status("cancelled", "No running Copilot response was found to stop.")
+            else:
+                emit_status("cancelled", "Quit requested before the prompt was submitted.")
+            try:
+                ctx.close()
+            except Exception:
+                pass
+            emit_status("cancelled", "Run cancelled. The repository was not changed.")
+            raise SystemExit(QUIT_EXIT_CODE)
+    if quit_requested():
+        emit_status("cancelled", "Run cancelled before applying changes. The repository was not changed.")
+        raise SystemExit(QUIT_EXIT_CODE)
     result_zip = work / f"{root.name}-modified.zip"
     emit_status("validating", "Validating downloaded ZIP contents...")
     result_hash = normalize_download(downloaded, result_zip)

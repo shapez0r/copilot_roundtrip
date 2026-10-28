@@ -22,6 +22,8 @@ function parseStatusLine(line) {
   } catch (_) { return null; }
 }
 const REASONING_PREFIX = 'ROUNDTRIP_REASONING:';
+// Time the script gets to click Stop in Copilot and exit after Cancel before it is killed.
+const QUIT_GRACE_MS = 30000;
 const REASONING_TAIL = 10;
 const ANSWER_MAX_CHARS = 4000;
 // Live output streamed by the script: reasoning blocks [{title, active, total, lines:[latest <=10 lines]}]
@@ -195,7 +197,7 @@ class ChatProvider {
     const n=nonce();
     const css=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.css'));
     const js=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.js'));
-    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src data:; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="temporaryChat" title="Enable Copilot Temporary chat before selecting the model"><input id="temporaryChat" type="checkbox" checked> Temporary chat</label><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes... (paste or drop images/files to attach)" required></textarea><div class="attach-bar"><button id="attach" type="button" title="Attach files to the prompt">Attach files...</button><span class="attach-hint">Paste an image, or drag and drop images/files here (hold Shift while dropping).</span></div><ul id="attachments" class="attachments" aria-label="Attached files" hidden></ul><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div><details id="reasoning" class="reasoning" open hidden><summary><span id="reasoningSpinner" class="spinner" aria-hidden="true" hidden></span><span id="reasoningTitle">Live response</span></summary><div id="reasoningBlocks" class="reasoning-blocks" aria-live="polite"></div></details></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
+    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src data:; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="temporaryChat" title="Enable Copilot Temporary chat before selecting the model"><input id="temporaryChat" type="checkbox" checked> Temporary chat</label><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes... (Enter to run, Shift+Enter for a new line; paste or drop images/files to attach)" required></textarea><div class="attach-bar"><button id="attach" type="button" title="Attach files to the prompt">Attach files...</button><span class="attach-hint">Paste an image, or drag and drop images/files here (hold Shift while dropping).</span></div><ul id="attachments" class="attachments" aria-label="Attached files" hidden></ul><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div><details id="reasoning" class="reasoning" open hidden><summary><span id="reasoningSpinner" class="spinner" aria-hidden="true" hidden></span><span id="reasoningTitle">Live response</span></summary><div id="reasoningBlocks" class="reasoning-blocks" aria-live="polite"></div></details></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
     w.onDidReceiveMessage(async m=>{
       if(m.type==='ready') this.refresh();
       if(m.type==='login') await vscode.commands.executeCommand('copilotRoundtrip.login');
@@ -263,7 +265,19 @@ class ChatProvider {
     else this.post({type:'error',text:'Dropped item is not a local file.'});
   }
   finishLogin() { if(this.loginProc && this.loginProc.stdin.writable) { this.updateProgress('login','Finishing browser sign-in...'); this.loginProc.stdin.write('\n'); } }
-  cancel() { if(this.proc && !this.proc.killed) { this.proc.kill(); this.updateProgress('cancelled','Stopping the script...'); } }
+  // Cancel works like pressing Q in the script: it clicks Stop on the running Copilot response
+  // first and only then quits. The process is killed only if it does not exit in time.
+  cancel() {
+    if(!this.busy || this.cancelRequested) return;
+    this.cancelRequested=true;
+    this.updateProgress('cancelled','Stopping the Copilot response, then quitting...');
+    if(this.proc) this.requestQuit(this.proc);
+  }
+  requestQuit(child) {
+    try { if(child.stdin && child.stdin.writable) child.stdin.write('q\n'); } catch (_) { /* fall back to kill below */ }
+    clearTimeout(this.cancelTimer);
+    this.cancelTimer=setTimeout(()=>{ if(child.exitCode===null && child.signalCode===null) child.kill(); },QUIT_GRACE_MS);
+  }
   async run(prompt, model, showBrowser, attachments, temporaryChat) {
     if(this.busy) return;
     if(typeof prompt!=='string' || !prompt.trim()) { this.post({type:'error',text:'Enter a prompt first.'}); return; }
@@ -275,7 +289,7 @@ class ChatProvider {
       cfg.showBrowser=showBrowser===true;
       cfg.temporaryChat=temporaryChat!==false;
     const script=path.join(this.context.extensionPath,'scripts','copilot_repo_roundtrip.py');
-    this.busy=true; this.statusHistory=[]; this.updateReasoning({blocks:[],answers:[]}); this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
+    this.busy=true; this.cancelRequested=false; this.statusHistory=[]; this.updateReasoning({blocks:[],answers:[]}); this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
     const attachmentNames=(Array.isArray(attachments)?attachments:[]).filter(a=>a&&typeof a==='object').map(a=>String(a.name||(a.path?path.basename(a.path):'file')));
     const userItem={role:'user',text:prompt,attachments:attachmentNames};
     this.post({type:'message',item:userItem});
@@ -291,6 +305,7 @@ class ChatProvider {
       await new Promise((resolve,reject)=>{
         const child=cp.spawn(python,args,{cwd:repo,windowsHide:false,env:process.env});
         this.proc=child;
+        if(this.cancelRequested) this.requestQuit(child);
         child.stdout.on('data',chunk=>{const s=chunk.toString();stdout+=s;this.output.append(s);});
         child.stderr.on('data',chunk=>{
             const s=chunk.toString();
@@ -308,7 +323,7 @@ class ChatProvider {
             }
           });
         child.on('error',reject);
-        child.on('close',(code,signal)=>{if(statusBuffer.trim()){const reasoning=parseLiveLine(statusBuffer);if(reasoning)this.updateReasoning(reasoning);else{stderr+=statusBuffer;this.output.appendLine(statusBuffer);const last=parseStatusLine(statusBuffer);this.updateProgress(last?.stage||'log',last?.message||statusBuffer.trim());}}cancelled=signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
+        child.on('close',(code,signal)=>{if(statusBuffer.trim()){const reasoning=parseLiveLine(statusBuffer);if(reasoning)this.updateReasoning(reasoning);else{stderr+=statusBuffer;this.output.appendLine(statusBuffer);const last=parseStatusLine(statusBuffer);this.updateProgress(last?.stage||'log',last?.message||statusBuffer.trim());}}cancelled=this.cancelRequested||signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
       });
       const result=parseResult(stdout);
       const item={role:'assistant',repo,text:result.chat_response || 'Repository modification completed.',diffStat:result.diff_stat || '',gitStatus:result.status || ''};
@@ -323,6 +338,7 @@ class ChatProvider {
       this.updateProgress('failed',msg);
     } finally {
       if(attachDir) { try { fs.rmSync(attachDir,{recursive:true,force:true}); } catch (_) { /* best effort */ } }
+      clearTimeout(this.cancelTimer);this.cancelTimer=null;this.cancelRequested=false;
       this.proc=null;this.busy=false;this.post({type:'busy',value:false});
     }
   }

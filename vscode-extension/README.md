@@ -22,7 +22,8 @@ A sidebar prompt-and-response interface for the repository-wide `copilot_repo_ro
 - The script **replaces the entire worktree** (excluding `.git`) with the downloaded ZIP after backing up files. Files missing from the ZIP are removed, including untracked files. Inspect the Git diff and test before committing.
 - The browser sign-in profile contains sensitive authentication state; do not commit or share it.
 - No API keys, model API, inline completions, or code assistance features are used. This requires a Microsoft 365 Copilot Chat account and its browser UI.
-- Cancel stops the spawned Python process but cannot undo a replacement already in progress; use the backup if needed.
+- Cancel first clicks **Stop** on the running Copilot response, then quits the script (same as pressing `Q` in a terminal run); the process is only killed if it has not exited after 30 seconds. Cancel cannot undo a replacement already in progress; use the backup if needed.
+- Press **Enter** in the prompt box to run it, exactly like clicking **Modify repository**; **Shift+Enter** inserts a new line.
 - The extension requires a local VS Code extension host, Python, and Chromium. Remote/web-only hosts are not supported.
 
 Round-trip upload names use local timestamps such as `repo-20261024-191212.zip.txt`. Temporary source ZIPs, downloaded files and rollback backups are deleted when the run finishes (including errors). The applied repository changes remain in the working tree.

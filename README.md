@@ -60,6 +60,8 @@ python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Match the layou
 
 Attached files are uploaded after the repository archive and mentioned in the prompt as context; they are not added to the repository.
 
+While a fix runs, press `Q` in the terminal to quit: once the prompt has been submitted, the script first clicks **Stop** on the Copilot response and only then closes the browser and exits (exit code 130) without changing the repository. The Stop button selector can be overridden with `COPILOT_STOP`.
+
 The tool requires a clean working tree by default. `--allow-dirty` bypasses this check, but the uploaded snapshot is still made from `HEAD`, **not** from uncommitted or untracked changes.
 
 ## How it works

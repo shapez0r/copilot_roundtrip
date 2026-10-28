@@ -342,6 +342,13 @@
   document.addEventListener('drop',e=>{if(!form.contains(e.target))e.preventDefault();});
   $('attach').addEventListener('click',()=>vscode.postMessage({type:'pickAttachments'}));
   form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked,temporaryChat:$('temporaryChat').checked,attachments:attachments.map(a=>a.kind==='path'?{kind:'path',path:a.path,name:a.name}:{kind:'data',name:a.name,data:a.data})});prompt.value='';attachments=[];renderAttachments();});
+  // Enter runs the prompt exactly like clicking Modify repository; Shift+Enter inserts a new line.
+  prompt.addEventListener('keydown',e=>{
+    if(e.key!=='Enter'||e.shiftKey||e.altKey||e.isComposing||e.keyCode===229)return;
+    e.preventDefault();
+    if($('send').disabled)return;
+    form.requestSubmit($('send'));
+  });
   $('cancel').addEventListener('click',()=>vscode.postMessage({type:'cancel'}));
   $('login').addEventListener('click',()=>vscode.postMessage({type:'login'}));
     $('finishLogin').addEventListener('click',()=>vscode.postMessage({type:'finishLogin'}));
