@@ -23,18 +23,32 @@ function parseStatusLine(line) {
 }
 const REASONING_PREFIX = 'ROUNDTRIP_REASONING:';
 const REASONING_TAIL = 10;
-// Live reasoning blocks streamed by the script: [{title, active, total, lines:[latest <=10 lines]}].
-function parseReasoningLine(line) {
+const ANSWER_MAX_CHARS = 4000;
+// Live output streamed by the script: reasoning blocks [{title, active, total, lines:[latest <=10 lines]}]
+// and intermediate answers [{after, text}] shown after the first `after` reasoning blocks.
+function parseLiveLine(line) {
   if (!line.startsWith(REASONING_PREFIX)) return null;
   try {
     const value = JSON.parse(line.slice(REASONING_PREFIX.length));
     if (!value || !Array.isArray(value.blocks)) return null;
-    return value.blocks.filter(b => b && typeof b === 'object').map((b, i) => {
+    const blocks = value.blocks.filter(b => b && typeof b === 'object').map((b, i) => {
       const lines = (Array.isArray(b.lines) ? b.lines : []).map(String).slice(-REASONING_TAIL);
       return {index: i, title: String(b.title || 'Reasoning'), active: b.active === true,
         total: Math.max(Number(b.total) || 0, lines.length), lines};
     });
+    const answers = (Array.isArray(value.answers) ? value.answers : [])
+      .filter(a => a && typeof a === 'object' && typeof a.text === 'string' && a.text.trim())
+      .map(a => {
+        const text = a.text.trim();
+        return {after: Math.max(0, Math.min(blocks.length, Math.floor(Number(a.after)) || 0)),
+          text: text.length > ANSWER_MAX_CHARS ? '\u2026' + text.slice(-ANSWER_MAX_CHARS) : text};
+      });
+    return {blocks, answers};
   } catch (_) { return null; }
+}
+function parseReasoningLine(line) {
+  const live = parseLiveLine(line);
+  return live ? live.blocks : null;
 }
 function buildArgs(script, request, repo, cfg) {
   const args = [script];
@@ -173,7 +187,7 @@ async function ensureRuntime(context, cfg, output, progress) {
 }
 
 class ChatProvider {
-  constructor(context, output) { this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; this.loginProc=null; this.reasoning=[]; }
+  constructor(context, output) { this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; this.loginProc=null; this.reasoning={blocks:[],answers:[]}; }
   resolveWebviewView(view) {
     this.view=view;
     const w=view.webview;
@@ -181,7 +195,7 @@ class ChatProvider {
     const n=nonce();
     const css=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.css'));
     const js=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.js'));
-    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src data:; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="temporaryChat" title="Enable Copilot Temporary chat before selecting the model"><input id="temporaryChat" type="checkbox" checked> Temporary chat</label><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes... (paste or drop images/files to attach)" required></textarea><div class="attach-bar"><button id="attach" type="button" title="Attach files to the prompt">Attach files...</button><span class="attach-hint">Paste an image, or drag and drop images/files here (hold Shift while dropping).</span></div><ul id="attachments" class="attachments" aria-label="Attached files" hidden></ul><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div><details id="reasoning" class="reasoning" open hidden><summary><span id="reasoningSpinner" class="spinner" aria-hidden="true" hidden></span><span id="reasoningTitle">Reasoning</span></summary><div id="reasoningBlocks" class="reasoning-blocks" aria-live="polite"></div></details></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
+    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src data:; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="temporaryChat" title="Enable Copilot Temporary chat before selecting the model"><input id="temporaryChat" type="checkbox" checked> Temporary chat</label><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes... (paste or drop images/files to attach)" required></textarea><div class="attach-bar"><button id="attach" type="button" title="Attach files to the prompt">Attach files...</button><span class="attach-hint">Paste an image, or drag and drop images/files here (hold Shift while dropping).</span></div><ul id="attachments" class="attachments" aria-label="Attached files" hidden></ul><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div><details id="reasoning" class="reasoning" open hidden><summary><span id="reasoningSpinner" class="spinner" aria-hidden="true" hidden></span><span id="reasoningTitle">Live response</span></summary><div id="reasoningBlocks" class="reasoning-blocks" aria-live="polite"></div></details></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
     w.onDidReceiveMessage(async m=>{
       if(m.type==='ready') this.refresh();
       if(m.type==='login') await vscode.commands.executeCommand('copilotRoundtrip.login');
@@ -203,7 +217,7 @@ class ChatProvider {
   }
   refresh() {
     this.post({type:'busy',value:this.busy});
-    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'reasoning',blocks:this.reasoning}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'temporaryChat',value:config().temporaryChat}); this.post({type:'loginActive',value:!!this.loginProc});
+    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'reasoning',blocks:this.reasoning.blocks,answers:this.reasoning.answers}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'temporaryChat',value:config().temporaryChat}); this.post({type:'loginActive',value:!!this.loginProc});
   }
   async openResult(p) {
     // Only open ZIPs emitted by successful runs, never arbitrary paths from the webview.
@@ -217,9 +231,9 @@ class ChatProvider {
     if (this.statusHistory.length > 100) this.statusHistory.shift();
     this.post({type:'progressHistory', items:this.statusHistory});
   }
-  updateReasoning(blocks) {
-    this.reasoning = blocks;
-    this.post({type:'reasoning', blocks});
+  updateReasoning(live) {
+    this.reasoning = {blocks: live.blocks || [], answers: live.answers || []};
+    this.post({type:'reasoning', blocks:this.reasoning.blocks, answers:this.reasoning.answers});
   }
   postAttachedPaths(paths) {
     const items=[];
@@ -261,7 +275,7 @@ class ChatProvider {
       cfg.showBrowser=showBrowser===true;
       cfg.temporaryChat=temporaryChat!==false;
     const script=path.join(this.context.extensionPath,'scripts','copilot_repo_roundtrip.py');
-    this.busy=true; this.statusHistory=[]; this.updateReasoning([]); this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
+    this.busy=true; this.statusHistory=[]; this.updateReasoning({blocks:[],answers:[]}); this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
     const attachmentNames=(Array.isArray(attachments)?attachments:[]).filter(a=>a&&typeof a==='object').map(a=>String(a.name||(a.path?path.basename(a.path):'file')));
     const userItem={role:'user',text:prompt,attachments:attachmentNames};
     this.post({type:'message',item:userItem});
@@ -284,8 +298,8 @@ class ChatProvider {
             const lines=statusBuffer.split(/\r?\n/);
             statusBuffer=lines.pop();
             for(const line of lines){
-              // Reasoning updates are frequent; show them live without flooding logs or errors.
-              const reasoning=parseReasoningLine(line);
+              // Reasoning and live-answer updates are frequent; show them live without flooding logs or errors.
+              const reasoning=parseLiveLine(line);
               if(reasoning){this.updateReasoning(reasoning);continue;}
               stderr+=line+'\n';this.output.appendLine(line);
               const status=parseStatusLine(line);
@@ -294,7 +308,7 @@ class ChatProvider {
             }
           });
         child.on('error',reject);
-        child.on('close',(code,signal)=>{if(statusBuffer.trim()){const reasoning=parseReasoningLine(statusBuffer);if(reasoning)this.updateReasoning(reasoning);else{stderr+=statusBuffer;this.output.appendLine(statusBuffer);const last=parseStatusLine(statusBuffer);this.updateProgress(last?.stage||'log',last?.message||statusBuffer.trim());}}cancelled=signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
+        child.on('close',(code,signal)=>{if(statusBuffer.trim()){const reasoning=parseLiveLine(statusBuffer);if(reasoning)this.updateReasoning(reasoning);else{stderr+=statusBuffer;this.output.appendLine(statusBuffer);const last=parseStatusLine(statusBuffer);this.updateProgress(last?.stage||'log',last?.message||statusBuffer.trim());}}cancelled=signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
       });
       const result=parseResult(stdout);
       const item={role:'assistant',repo,text:result.chat_response || 'Repository modification completed.',diffStat:result.diff_stat || '',gitStatus:result.status || ''};
@@ -348,4 +362,4 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(()=>provider.refresh()));
 }
 function deactivate() {}
-module.exports={activate,deactivate,parseResult,parseStatusLine,parseReasoningLine,buildArgs,resolveChangedPath,materializeAttachments,safeAttachmentName};
+module.exports={activate,deactivate,parseResult,parseStatusLine,parseReasoningLine,parseLiveLine,buildArgs,resolveChangedPath,materializeAttachments,safeAttachmentName};

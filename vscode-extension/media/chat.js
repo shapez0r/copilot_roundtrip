@@ -131,7 +131,7 @@
   }
   // Single rotating activity line: "<latest status>" with a spinner while work is active.
   const activity={message:'',busy:false,login:false};
-  let lastReasoning=[];
+  let lastReasoning=[], lastAnswers=[];
   function renderActivity(){
     const running=activity.busy||activity.login;
     const text=$('activityText'), spinner=$('activitySpinner');
@@ -139,32 +139,60 @@
     spinner.hidden=!running;
     if(text.textContent!==next){text.textContent=next;text.classList.remove('rotate');void text.offsetWidth;text.classList.add('rotate');}
   }
-  // Live reasoning: an outer collapsible panel with one collapsible section per reasoning
-  // block ("Reasoning...", "Reasoned for 38s", ...), each showing only its latest 10 lines.
-  // Open/closed choices made by the user are kept while the content updates in real time.
+  // Live response: an outer collapsible panel showing, in on-screen order, the model's
+  // intermediate (live) answers interleaved with one collapsible section per reasoning block
+  // ("answer", "Reasoned for 38s", "answer", "Reasoned for 4s", "answer"). Each reasoning
+  // block shows only its latest 10 lines. Open/closed choices made by the user are kept
+  // while the content updates in real time.
   const reasoningUserOpen={};
-  function renderReasoning(blocks){
+  const liveItems=new Map();
+  function blockItem(i){
+    const key='b'+i;
+    if(liveItems.has(key))return liveItems.get(key);
+    const d=document.createElement('details');d.className='reasoning-block';
+    const sum=document.createElement('summary');
+    sum.append(span('reasoning-block-title',''),span('reasoning-block-meta',''));
+    const pre=document.createElement('pre');pre.className='reasoning-lines';
+    d.append(sum,pre);
+    // Record the user's choice; a click on the summary toggles the section.
+    sum.addEventListener('click',()=>{reasoningUserOpen[i]=!d.open;});
+    liveItems.set(key,d);return d;
+  }
+  function answerItem(after){
+    const key='a'+after;
+    if(liveItems.has(key))return liveItems.get(key);
+    const d=document.createElement('div');d.className='live-answer';
+    const pre=document.createElement('pre');pre.className='live-answer-text';
+    d.append(pre);
+    liveItems.set(key,d);return d;
+  }
+  function renderReasoning(blocks,answers){
     const box=$('reasoning'), list=$('reasoningBlocks');
     blocks=Array.isArray(blocks)?blocks:[];
-    if(!blocks.length){box.hidden=true;list.replaceChildren();for(const k of Object.keys(reasoningUserOpen))delete reasoningUserOpen[k];return;}
+    answers=(Array.isArray(answers)?answers:[]).filter(a=>a&&typeof a.text==='string'&&a.text.trim());
+    if(!blocks.length&&!answers.length){box.hidden=true;list.replaceChildren();liveItems.clear();for(const k of Object.keys(reasoningUserOpen))delete reasoningUserOpen[k];return;}
     box.hidden=false;
     const anyActive=blocks.some(b=>b.active);
-    $('reasoningSpinner').hidden=!(anyActive&&activity.busy);
-    $('reasoningTitle').textContent='Reasoning ('+blocks.length+(blocks.length===1?' block':' blocks')+')';
+    $('reasoningSpinner').hidden=!(activity.busy&&(anyActive||answers.length>0));
+    const parts=[];
+    if(answers.length)parts.push(answers.length+(answers.length===1?' answer':' answers'));
+    if(blocks.length)parts.push(blocks.length+(blocks.length===1?' reasoning block':' reasoning blocks'));
+    $('reasoningTitle').textContent='Live response ('+parts.join(', ')+')';
+    // Order: answers after N blocks are placed right after block N (after=0: before the first block).
+    const byAfter=new Map();
+    for(const a of answers){const k=Math.max(0,Math.min(blocks.length,Number(a.after)||0));byAfter.set(k,(byAfter.has(k)?byAfter.get(k)+'\n\n':'')+a.text.trim());}
+    const ordered=[], lastAfter=Math.max(-1,...byAfter.keys());
+    const pushAnswer=k=>{
+      if(!byAfter.has(k))return;
+      const el=answerItem(k), pre=el.firstChild, text=byAfter.get(k);
+      // The newest answer while the run is busy is still streaming.
+      el.classList.toggle('active',activity.busy&&k===lastAfter&&k===blocks.length);
+      if(pre.textContent!==text){pre.textContent=text;pre.scrollTop=pre.scrollHeight;}
+      ordered.push(el);
+    };
+    pushAnswer(0);
     blocks.forEach((b,i)=>{
-      let d=list.children[i];
-      if(!d){
-        d=document.createElement('details');d.className='reasoning-block';
-        const sum=document.createElement('summary');
-        const title=span('reasoning-block-title','');
-        const meta=span('reasoning-block-meta','');
-        sum.append(title,meta);
-        const pre=document.createElement('pre');pre.className='reasoning-lines';
-        d.append(sum,pre);
-        // Record the user's choice; a click on the summary toggles the section.
-        sum.addEventListener('click',()=>{reasoningUserOpen[i]=!d.open;});
-        list.append(d);
-      }
+      const d=blockItem(i);
       const [sum,pre]=d.children;
       sum.children[0].textContent=(i+1)+'. '+(b.title||'Reasoning');
       sum.children[0].classList.toggle('active',!!b.active&&activity.busy);
@@ -176,8 +204,14 @@
       // Default: the latest block is expanded, earlier blocks are collapsed.
       const open=i in reasoningUserOpen?reasoningUserOpen[i]:i===blocks.length-1;
       if(d.open!==open)d.open=open;
+      ordered.push(d);
+      pushAnswer(i+1);
     });
-    while(list.children.length>blocks.length)list.lastChild.remove();
+    // Drop items that disappeared, then place the rest in order without recreating them.
+    const keep=new Set(ordered);
+    for(const [k,el] of liveItems) if(!keep.has(el)){el.remove();liveItems.delete(k);}
+    ordered.forEach((el,k)=>{if(list.children[k]!==el)list.insertBefore(el,list.children[k]||null);});
+    while(list.children.length>ordered.length)list.lastChild.remove();
   }
   window.addEventListener('message',e=>{
     const m=e.data;
@@ -187,13 +221,13 @@
       if(m.type==='showBrowser' && !$('showBrowser').dataset.initialized){$('showBrowser').checked=!!m.value;$('showBrowser').dataset.initialized='true';}
       if(m.type==='temporaryChat' && !$('temporaryChat').dataset.initialized){$('temporaryChat').checked=m.value!==false;$('temporaryChat').dataset.initialized='true';}
       if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);}
-    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning);$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;$('temporaryChat').disabled=m.value;renderAttachments();}
+    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning,lastAnswers);$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;$('temporaryChat').disabled=m.value;renderAttachments();}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
       activity.message=last?last.message:'';renderActivity();
     }
     if(m.type==='error'){activity.message=m.text;renderActivity();}
-    if(m.type==='reasoning'){lastReasoning=m.blocks||[];renderReasoning(lastReasoning);}
+    if(m.type==='reasoning'){lastReasoning=m.blocks||[];lastAnswers=m.answers||[];renderReasoning(lastReasoning,lastAnswers);}
     if(m.type==='attached'&&Array.isArray(m.items)){for(const it of m.items)addAttachment(it);}
   });
     // Editable model combobox: pick a preset from the dropdown or type any provider/model.

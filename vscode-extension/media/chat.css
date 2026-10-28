@@ -88,3 +88,8 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .reasoning-lines{margin:4px 0 2px;max-height:15em;overflow:auto;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;line-height:1.45;opacity:.9;user-select:text;-webkit-user-select:text}
 @keyframes reasoning-pulse{50%{opacity:.3}}
 @media (prefers-reduced-motion:reduce){.reasoning-block-title.active::after{animation:none}.reasoning>summary::before,.reasoning-block>summary::before{transition:none}}
+/* Live intermediate answers, interleaved with the reasoning blocks in on-screen order. */
+.live-answer{padding:2px 0 2px 2px}
+.live-answer-text{margin:2px 0;max-height:15em;overflow:auto;font-family:var(--vscode-font-family);font-size:12px;line-height:1.5;user-select:text;-webkit-user-select:text;cursor:text}
+.live-answer.active .live-answer-text::after{content:' \2026';animation:reasoning-pulse 1.2s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){.live-answer.active .live-answer-text::after{animation:none}}

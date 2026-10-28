@@ -49,11 +49,26 @@ UI_SETTLE_MS = 2500
 # Number of most recent reasoning lines sent to the extension for each reasoning block.
 REASONING_TAIL_LINES = 10
 REASONING_PREFIX = "ROUNDTRIP_REASONING:"
+# Maximum characters kept (latest part) of each live intermediate answer segment.
+ANSWER_MAX_CHARS = 4000
+# Selectors for Copilot assistant messages (live answers and the final chat response).
+ASSISTANT_SELECTORS = (
+    '[data-message-author-role="assistant"]',
+    '[data-role="assistant"]',
+    '[data-testid*="assistant-message" i]',
+    '[data-testid*="copilot-message" i]',
+    '[class*="assistant-message" i]',
+)
 
 
-def emit_reasoning(blocks):
-    """Stream the latest reasoning blocks on stderr (one JSON line per change)."""
-    print(REASONING_PREFIX + json.dumps({"blocks": blocks}), file=sys.stderr, flush=True)
+def emit_reasoning(blocks, answers=None):
+    """Stream the latest reasoning blocks and intermediate answers on stderr (one JSON line per change).
+
+    answers: [{"after": N, "text": ...}] - live answer text shown after the first N reasoning blocks
+    (after=0 is text before the first block), as in "answer / Reasoned for 38s / answer / ...".
+    """
+    print(REASONING_PREFIX + json.dumps({"blocks": blocks, "answers": answers or []}),
+          file=sys.stderr, flush=True)
 
 
 def wait_for_ui(page, ms=UI_SETTLE_MS):
@@ -65,6 +80,7 @@ def wait_for_ui(page, ms=UI_SETTLE_MS):
 # Collects (1) a cheap signature of the visible chat text, used to detect on-screen output,
 # and (2) the reasoning blocks ("Reasoning...", "Reasoned for 38s", ...). Collapsed reasoning
 # blocks are expanded once so their text can be read in both visible and hidden browser modes.
+# (3) The live intermediate answers: the latest assistant message's text split at those blocks.
 SCREEN_SCRIPT = r"""
 (args) => {
   const tail = args.tail, custom = args.selector;
@@ -88,21 +104,25 @@ SCREEN_SCRIPT = r"""
     return inner ? inner.getAttribute('aria-expanded') : null;
   };
   const isHead = el => heads.some(h => h === el || el.contains(h));
+  // Element holding a (non-<summary>) header's reasoning text.
+  const contentEl = h => {
+    const ctrl = h.getAttribute('aria-controls') ||
+      (h.querySelector('[aria-controls]') || {getAttribute: () => null}).getAttribute('aria-controls');
+    if (ctrl) { const target = document.getElementById(ctrl); if (target) return target; }
+    let el = h;
+    for (let depth = 0; depth < 4 && el; depth++) {
+      const next = el.nextElementSibling;
+      if (next && !isHead(next) && textOf(next)) return next;
+      el = el.parentElement;
+    }
+    return null;
+  };
   const contentFor = h => {
     if (h.tagName === 'SUMMARY' && h.parentElement) {
       const full = textOf(h.parentElement), title = textOf(h);
       return full.startsWith(title) ? full.slice(title.length) : full;
     }
-    const ctrl = h.getAttribute('aria-controls') ||
-      (h.querySelector('[aria-controls]') || {getAttribute: () => null}).getAttribute('aria-controls');
-    if (ctrl) { const target = document.getElementById(ctrl); if (target) return textOf(target); }
-    let el = h;
-    for (let depth = 0; depth < 4 && el; depth++) {
-      const next = el.nextElementSibling;
-      if (next && !isHead(next) && textOf(next)) return textOf(next);
-      el = el.parentElement;
-    }
-    return '';
+    return textOf(contentEl(h));
   };
   const blocks = heads.map((h, index) => {
     const title = textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb]+$/, '').trim();
@@ -116,24 +136,89 @@ SCREEN_SCRIPT = r"""
     const active = !/^\s*(reasoned|thought)\b/i.test(title);
     return {index, title, active, total: lines.length, lines: lines.slice(-tail)};
   });
+  // Live intermediate answers: the latest assistant message's visible text, split at the
+  // reasoning headers ("answer", "Reasoned for 38s", "answer", "Reasoned for 4s", "answer").
+  const answers = [];
+  try {
+    const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+    let root = null;
+    for (const s of args.assistant || []) {
+      let nodes = [];
+      try { nodes = Array.from(document.querySelectorAll(s)); } catch (_) { nodes = []; }
+      for (let i = nodes.length - 1; i >= 0 && !root; i--) if (visible(nodes[i]) && textOf(nodes[i])) root = nodes[i];
+      if (root) break;
+    }
+    // Fallback: the outermost ancestor of the latest reasoning header that excludes the user's prompt.
+    const snippet = norm(args.prompt).slice(0, 60);
+    if (!root && heads.length && snippet) {
+      let el = heads[heads.length - 1].parentElement;
+      while (el && el.parentElement && el.parentElement !== document.body &&
+             !norm(textOf(el.parentElement)).includes(snippet)) el = el.parentElement;
+      if (el && !norm(textOf(el)).includes(snippet)) root = el;
+    }
+    if (root) {
+      // Reasoning headers split the text; their expanded reasoning content is skipped.
+      const breaks = new Map(), skip = new Set();
+      heads.forEach((h, i) => {
+        breaks.set(h.tagName === 'SUMMARY' && h.parentElement ? h.parentElement : h, i);
+        if (h.tagName !== 'SUMMARY' && expandedState(h) !== 'false') {
+          const c = contentEl(h);
+          if (c && !c.contains(root)) skip.add(c);
+        }
+      });
+      const before = heads.filter(h => !root.contains(h) &&
+        (h.compareDocumentPosition(root) & Node.DOCUMENT_POSITION_FOLLOWING)).length;
+      const segments = [];
+      let cur = {after: before, text: ''};
+      const ignored = /^(SCRIPT|STYLE|NOSCRIPT|SVG|BUTTON|TEXTAREA|INPUT|SELECT|TEMPLATE|IFRAME|CANVAS)$/;
+      const walk = (node, pre) => {
+        if (node.nodeType === 3) { cur.text += pre ? node.nodeValue : node.nodeValue.replace(/\s+/g, ' '); return; }
+        if (node.nodeType !== 1) return;
+        const el = node;
+        if (el !== root && breaks.has(el)) { segments.push(cur); cur = {after: breaks.get(el) + 1, text: ''}; return; }
+        if (skip.has(el) || ignored.test(el.tagName.toUpperCase()) || el.getAttribute('role') === 'button' ||
+            el.getAttribute('aria-hidden') === 'true') return;
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return;
+        if (el.tagName === 'BR') { cur.text += '\n'; return; }
+        const block = !cs.display.startsWith('inline') && cs.display !== 'contents';
+        const keep = pre || /^pre/.test(cs.whiteSpace);
+        if (block) cur.text += '\n';
+        for (const child of el.childNodes) walk(child, keep);
+        if (block) cur.text += '\n';
+      };
+      walk(root, false);
+      segments.push(cur);
+      for (const seg of segments) {
+        let text = seg.text.split('\n').map(l => l.replace(/[ \t\u00a0]+/g, ' ').trim()).join('\n')
+          .replace(/\n{2,}/g, '\n').trim();
+        if (!text) continue;
+        if (text.length > args.maxChars) text = '\u2026' + text.slice(-args.maxChars);
+        const last = answers[answers.length - 1];
+        if (last && last.after === seg.after) last.text += '\n\n' + text; else answers.push({after: seg.after, text});
+      }
+    }
+  } catch (_) { /* live answers are best effort */ }
   // Signature of on-screen text; elapsed-time counters and animated dots are ignored.
   const root = document.querySelector('main') || document.body;
   const text = textOf(root).replace(/\d+(\.\d+)?\s*(ms|s|sec|secs|seconds?|m|min|mins|minutes?)\b/gi, '')
     .replace(/[.\u2026]+/g, '');
   let hash = 5381;
   for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
-  return {signature: text.length + ':' + hash, blocks};
+  return {signature: text.length + ':' + hash, blocks, answers};
 }
 """
 
 
-def read_screen(page, sel):
-    """Return (signature, reasoning blocks); failures yield (None, None)."""
+def read_screen(page, sel, prompt=""):
+    """Return (signature, reasoning blocks, live answers); failures yield (None, None, None)."""
     try:
-        data = page.evaluate(SCREEN_SCRIPT, {"tail": REASONING_TAIL_LINES, "selector": sel.get("reasoning") or ""})
-        return data.get("signature"), data.get("blocks") or []
+        data = page.evaluate(SCREEN_SCRIPT, {"tail": REASONING_TAIL_LINES, "selector": sel.get("reasoning") or "",
+                                             "assistant": list(ASSISTANT_SELECTORS), "prompt": prompt,
+                                             "maxChars": ANSWER_MAX_CHARS})
+        return data.get("signature"), data.get("blocks") or [], data.get("answers") or []
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def run(cmd, cwd=None, capture=True):
@@ -668,14 +753,7 @@ def cmd_login(args):
 
 def read_chat_response(page):
     """Read the latest assistant message, excluding the user's prompt."""
-    selectors = (
-        '[data-message-author-role="assistant"]',
-        '[data-role="assistant"]',
-        '[data-testid*="assistant-message" i]',
-        '[data-testid*="copilot-message" i]',
-        '[class*="assistant-message" i]',
-    )
-    for selector in selectors:
+    for selector in ASSISTANT_SELECTORS:
         try:
             nodes = page.locator(selector)
             for i in range(nodes.count() - 1, -1, -1):
@@ -754,20 +832,22 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         started = time.monotonic()
         last_activity = started
         last_signature = None
-        last_blocks = None
+        last_live = None
         seen = set()
         last_update = started
         while downloaded is None:
             now = time.monotonic()
-            signature, blocks = read_screen(page, sel)
+            signature, blocks, answers = read_screen(page, sel, prompt)
             if signature is not None and signature != last_signature:
                 if last_signature is not None:
                     last_activity = now
                 last_signature = signature
-            if blocks is not None and blocks != last_blocks:
-                last_blocks = blocks
-                last_activity = now if blocks else last_activity
-                emit_reasoning(blocks)
+            # Reasoning blocks and intermediate (live) answers are streamed together.
+            live = None if blocks is None else (blocks, answers)
+            if live is not None and live != last_live:
+                last_live = live
+                last_activity = now if (blocks or answers) else last_activity
+                emit_reasoning(blocks, answers)
             idle = now - last_activity
             if idle >= idle_limit:
                 break
