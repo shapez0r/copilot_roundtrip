@@ -8,7 +8,7 @@ validates the returned archive, and replaces the worktree after a backup.
 UI automation is unsupported and selectors can change. Run `login` once, then `fix`.
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile, time, zipfile
+import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, zipfile
 from pathlib import Path, PurePosixPath
 
 DEFAULT_URL = "https://m365.cloud.microsoft/chat/"
@@ -69,6 +69,53 @@ def emit_reasoning(blocks, answers=None):
     """
     print(REASONING_PREFIX + json.dumps({"blocks": blocks, "answers": answers or []}),
           file=sys.stderr, flush=True)
+
+
+# Screen-reader labels Copilot puts in front of messages ("Copilot said:", "You said:").
+_SPEAKER_LABEL = re.compile(r"^\s*(copilot|you)\s+said\s*:?\s*", re.I)
+
+
+def strip_speaker_label(text):
+    "Remove a leading 'Copilot said:' style label; a label-only text becomes empty."
+    text = (text or "").strip()
+    while True:
+        stripped = _SPEAKER_LABEL.sub("", text, count=1).strip()
+        if stripped == text:
+            return text
+        text = stripped
+
+
+def merge_live(prev_blocks, prev_answers, blocks, answers):
+    """Keep already streamed output when Copilot re-renders its final message.
+
+    When a response finishes, Copilot collapses the reasoning blocks and re-renders the
+    message, so a late read can return empty reasoning lines or only a "Copilot said:" label.
+    Previously seen reasoning lines and longer answer text are kept instead of being lost.
+    """
+    prev_blocks = prev_blocks or []
+    merged_blocks = []
+    for i, block in enumerate(blocks or []):
+        block = dict(block)
+        old = prev_blocks[i] if i < len(prev_blocks) else None
+        if old and not block.get("lines") and old.get("lines"):
+            block["lines"] = list(old["lines"])
+            block["total"] = max(int(old.get("total") or 0), len(old["lines"]))
+        merged_blocks.append(block)
+    # Blocks that temporarily vanished from the screen are kept as well.
+    for old in prev_blocks[len(merged_blocks):]:
+        merged_blocks.append(dict(old, active=False))
+    texts = {}
+    for answer in prev_answers or []:
+        texts[answer["after"]] = answer["text"]
+    for answer in answers or []:
+        text = strip_speaker_label(answer.get("text"))
+        if not text:
+            continue
+        after = answer.get("after", 0)
+        if len(text) >= len(texts.get(after, "")):
+            texts[after] = text
+    merged_answers = [{"after": after, "text": texts[after]} for after in sorted(texts) if texts[after]]
+    return merged_blocks, merged_answers
 
 
 def wait_for_ui(page, ms=UI_SETTLE_MS):
@@ -171,8 +218,10 @@ SCREEN_SCRIPT = r"""
   const blocks = heads.map((h, index) => {
     const title = textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb]+$/, '').trim();
     const expanded = expandedState(h);
-    if (expanded === 'false' && !h.dataset.roundtripExpanded) {
-      h.dataset.roundtripExpanded = '1';
+    // Copilot collapses a block again when it finishes ("Reasoning" -> "Reasoned for 10s"):
+    // expand once per title so the finished block's text stays readable.
+    if (expanded === 'false' && h.dataset.roundtripExpanded !== title) {
+      h.dataset.roundtripExpanded = title;
       try { h.click(); } catch (_) { /* best effort */ }
     }
     const lines = expanded === 'false' ? [] : contentFor(h).split(/\r?\n/)
@@ -877,6 +926,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         last_activity = started
         last_signature = None
         last_live = None
+        live_blocks, live_answers = [], []
         seen = set()
         last_update = started
         while downloaded is None:
@@ -887,11 +937,13 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                     last_activity = now
                 last_signature = signature
             # Reasoning blocks and intermediate (live) answers are streamed together.
-            live = None if blocks is None else (blocks, answers)
+            if blocks is not None:
+                live_blocks, live_answers = merge_live(live_blocks, live_answers, blocks, answers)
+            live = None if blocks is None else (live_blocks, live_answers)
             if live is not None and live != last_live:
                 last_live = live
-                last_activity = now if (blocks or answers) else last_activity
-                emit_reasoning(blocks, answers)
+                last_activity = now if (live_blocks or live_answers) else last_activity
+                emit_reasoning(live_blocks, live_answers)
             idle = now - last_activity
             if idle >= idle_limit:
                 break
@@ -927,7 +979,18 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
             (work / "copilot-timeout.html").write_text(page.content(), encoding="utf-8")
             ctx.close()
             raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s. Temporary diagnostics were removed with the run directory")
-        chat_response = read_chat_response(page)
+        # Final snapshot of the finished response, merged so nothing already shown is lost.
+        page.wait_for_timeout(1000)
+        _, blocks, answers = read_screen(page, sel, prompt)
+        if blocks is not None:
+            final_live = merge_live(live_blocks, live_answers, blocks, answers)
+            if final_live != (live_blocks, live_answers):
+                live_blocks, live_answers = final_live
+                emit_reasoning(live_blocks, live_answers)
+        chat_response = strip_speaker_label(read_chat_response(page))
+        live_text = "\n\n".join(a["text"] for a in live_answers)
+        if len(chat_response) < len(live_text):
+            chat_response = live_text
         ctx.close()
     result_zip = work / f"{root.name}-modified.zip"
     emit_status("validating", "Validating downloaded ZIP contents...")
