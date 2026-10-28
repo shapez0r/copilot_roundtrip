@@ -81,12 +81,54 @@ def wait_for_ui(page, ms=UI_SETTLE_MS):
 # and (2) the reasoning blocks ("Reasoning...", "Reasoned for 38s", ...). Collapsed reasoning
 # blocks are expanded once so their text can be read in both visible and hidden browser modes.
 # (3) The live intermediate answers: the latest assistant message's text split at those blocks.
+# Code blocks (e.g. the code shown under "Coding and executing") are left out of both the
+# reasoning lines and the live answers; only the step titles and prose are streamed.
 SCREEN_SCRIPT = r"""
 (args) => {
   const tail = args.tail, custom = args.selector;
   const titleRe = /^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
   const visible = el => !!el && el.getClientRects().length > 0;
   const textOf = el => (el && (el.innerText || el.textContent) || '').trim();
+  // Code blocks (e.g. under "Coding and executing") are not streamed: only the step titles and
+  // prose are shown, never the code itself. Inline `code` inside sentences is kept.
+  const codeSel = 'pre, [class*="code-block" i], [class*="codeblock" i], [class*="code_block" i]';
+  const isCode = el => {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = el.tagName.toUpperCase();
+    if (tag === 'PRE') return true;
+    if (tag === 'CODE') {
+      const d = getComputedStyle(el).display;
+      return !d.startsWith('inline') && d !== 'contents';
+    }
+    try { return el.matches(codeSel); } catch (_) { return false; }
+  };
+  const hasCode = el => {
+    if (!el || el.nodeType !== 1) return false;
+    try { if (el.querySelector(codeSel + ', code')) return Array.from(el.querySelectorAll(codeSel + ', code')).some(isCode); }
+    catch (_) { /* fall through */ }
+    return false;
+  };
+  // Visible text of an element without its code blocks (and without `exclude`, e.g. a <summary>).
+  const proseOf = (el, exclude) => {
+    if (!el) return '';
+    let out = '';
+    const skipTags = /^(SCRIPT|STYLE|NOSCRIPT|SVG|TEMPLATE|IFRAME|CANVAS|TEXTAREA|INPUT|SELECT)$/;
+    const walk = node => {
+      if (node.nodeType === 3) { out += node.nodeValue.replace(/\s+/g, ' '); return; }
+      if (node.nodeType !== 1) return;
+      if (node === exclude || isCode(node) || skipTags.test(node.tagName.toUpperCase()) ||
+          node.getAttribute('aria-hidden') === 'true') return;
+      const cs = getComputedStyle(node);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      if (node.tagName === 'BR') { out += '\n'; return; }
+      const block = !cs.display.startsWith('inline') && cs.display !== 'contents';
+      if (block) out += '\n';
+      for (const child of node.childNodes) walk(child);
+      if (block) out += '\n';
+    };
+    walk(el);
+    return out.split('\n').map(l => l.replace(/[ \t\u00a0]+/g, ' ').trim()).filter(Boolean).join('\n');
+  };
   let customHeads = null;
   if (custom) { try { customHeads = Array.from(document.querySelectorAll(custom)); } catch (_) { customHeads = null; } }
   let heads = customHeads || Array.from(document.querySelectorAll('button, [role="button"], summary, [aria-expanded]'));
@@ -119,10 +161,12 @@ SCREEN_SCRIPT = r"""
   };
   const contentFor = h => {
     if (h.tagName === 'SUMMARY' && h.parentElement) {
+      if (hasCode(h.parentElement)) return proseOf(h.parentElement, h);
       const full = textOf(h.parentElement), title = textOf(h);
       return full.startsWith(title) ? full.slice(title.length) : full;
     }
-    return textOf(contentEl(h));
+    const content = contentEl(h);
+    return hasCode(content) ? proseOf(content) : textOf(content);
   };
   const blocks = heads.map((h, index) => {
     const title = textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb]+$/, '').trim();
@@ -176,7 +220,7 @@ SCREEN_SCRIPT = r"""
         if (node.nodeType !== 1) return;
         const el = node;
         if (el !== root && breaks.has(el)) { segments.push(cur); cur = {after: breaks.get(el) + 1, text: ''}; return; }
-        if (skip.has(el) || ignored.test(el.tagName.toUpperCase()) || el.getAttribute('role') === 'button' ||
+        if (skip.has(el) || isCode(el) || ignored.test(el.tagName.toUpperCase()) || el.getAttribute('role') === 'button' ||
             el.getAttribute('aria-hidden') === 'true') return;
         const cs = getComputedStyle(el);
         if (cs.display === 'none' || cs.visibility === 'hidden') return;
