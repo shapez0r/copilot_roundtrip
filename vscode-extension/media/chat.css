@@ -69,3 +69,22 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .message-copy{flex:0 0 auto;padding:2px 8px;font-size:11px;background:var(--vscode-button-secondaryBackground,var(--vscode-button-background));color:var(--vscode-button-secondaryForeground,var(--vscode-button-foreground))}
 .message-copy:hover{background:var(--vscode-button-secondaryHoverBackground,var(--vscode-button-hoverBackground))}
 .message-copy:focus-visible{outline:2px solid var(--vscode-focusBorder)}
+
+/* Live reasoning: outer panel plus one collapsible section per reasoning block (latest 10 lines). */
+.reasoning{margin-top:8px;border:1px solid var(--vscode-panel-border);border-radius:4px;padding:4px 6px}
+.reasoning[hidden]{display:none}
+.reasoning>summary{display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:600;list-style-position:inside}
+.reasoning>summary::before,.reasoning-block>summary::before{content:'\25B8';display:inline-block;width:10px;transition:transform .15s}
+.reasoning[open]>summary::before,.reasoning-block[open]>summary::before{transform:rotate(90deg)}
+.reasoning summary::-webkit-details-marker{display:none}
+.reasoning summary{list-style:none}
+.reasoning summary:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+.reasoning-blocks{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+.reasoning-block{border-left:2px solid var(--vscode-panel-border);padding-left:6px}
+.reasoning-block>summary{display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0}
+.reasoning-block-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reasoning-block-title.active::after{content:' \2026';animation:reasoning-pulse 1.2s ease-in-out infinite}
+.reasoning-block-meta{flex:0 0 auto;opacity:.7;font-size:11px}
+.reasoning-lines{margin:4px 0 2px;max-height:15em;overflow:auto;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;line-height:1.45;opacity:.9;user-select:text;-webkit-user-select:text}
+@keyframes reasoning-pulse{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){.reasoning-block-title.active::after{animation:none}.reasoning>summary::before,.reasoning-block>summary::before{transition:none}}

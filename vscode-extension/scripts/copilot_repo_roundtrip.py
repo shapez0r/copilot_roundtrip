@@ -44,6 +44,98 @@ def emit_status(stage, message):
     print("ROUNDTRIP_STATUS:" + json.dumps({"stage": stage, "message": message}),
           file=sys.stderr, flush=True)
 
+# Time given to the Copilot web UI to finish rendering after navigation (visible and hidden browser).
+UI_SETTLE_MS = 2500
+# Number of most recent reasoning lines sent to the extension for each reasoning block.
+REASONING_TAIL_LINES = 10
+REASONING_PREFIX = "ROUNDTRIP_REASONING:"
+
+
+def emit_reasoning(blocks):
+    """Stream the latest reasoning blocks on stderr (one JSON line per change)."""
+    print(REASONING_PREFIX + json.dumps({"blocks": blocks}), file=sys.stderr, flush=True)
+
+
+def wait_for_ui(page, ms=UI_SETTLE_MS):
+    """Let the Copilot UI load properly before interacting with it."""
+    emit_status("browser", f"Letting Copilot UI load ({ms / 1000:g}s)...")
+    page.wait_for_timeout(ms)
+
+
+# Collects (1) a cheap signature of the visible chat text, used to detect on-screen output,
+# and (2) the reasoning blocks ("Reasoning...", "Reasoned for 38s", ...). Collapsed reasoning
+# blocks are expanded once so their text can be read in both visible and hidden browser modes.
+SCREEN_SCRIPT = r"""
+(args) => {
+  const tail = args.tail, custom = args.selector;
+  const titleRe = /^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
+  const visible = el => !!el && el.getClientRects().length > 0;
+  const textOf = el => (el && (el.innerText || el.textContent) || '').trim();
+  let customHeads = null;
+  if (custom) { try { customHeads = Array.from(document.querySelectorAll(custom)); } catch (_) { customHeads = null; } }
+  let heads = customHeads || Array.from(document.querySelectorAll('button, [role="button"], summary, [aria-expanded]'));
+  heads = heads.filter(h => {
+    const t = textOf(h);
+    return visible(h) && t && t.length <= 120 && (customHeads || titleRe.test(t));
+  });
+  // Keep the outermost header when several nested elements match the same title.
+  heads = heads.filter(h => !heads.some(o => o !== h && o.contains(h)));
+  const expandedState = h => {
+    if (h.tagName === 'SUMMARY') return h.parentElement && h.parentElement.open ? 'true' : 'false';
+    const own = h.getAttribute('aria-expanded');
+    if (own !== null) return own;
+    const inner = h.querySelector('[aria-expanded]');
+    return inner ? inner.getAttribute('aria-expanded') : null;
+  };
+  const isHead = el => heads.some(h => h === el || el.contains(h));
+  const contentFor = h => {
+    if (h.tagName === 'SUMMARY' && h.parentElement) {
+      const full = textOf(h.parentElement), title = textOf(h);
+      return full.startsWith(title) ? full.slice(title.length) : full;
+    }
+    const ctrl = h.getAttribute('aria-controls') ||
+      (h.querySelector('[aria-controls]') || {getAttribute: () => null}).getAttribute('aria-controls');
+    if (ctrl) { const target = document.getElementById(ctrl); if (target) return textOf(target); }
+    let el = h;
+    for (let depth = 0; depth < 4 && el; depth++) {
+      const next = el.nextElementSibling;
+      if (next && !isHead(next) && textOf(next)) return textOf(next);
+      el = el.parentElement;
+    }
+    return '';
+  };
+  const blocks = heads.map((h, index) => {
+    const title = textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb]+$/, '').trim();
+    const expanded = expandedState(h);
+    if (expanded === 'false' && !h.dataset.roundtripExpanded) {
+      h.dataset.roundtripExpanded = '1';
+      try { h.click(); } catch (_) { /* best effort */ }
+    }
+    const lines = expanded === 'false' ? [] : contentFor(h).split(/\r?\n/)
+      .map(l => l.trim()).filter(Boolean).map(l => l.length > 500 ? l.slice(0, 500) + '\u2026' : l);
+    const active = !/^\s*(reasoned|thought)\b/i.test(title);
+    return {index, title, active, total: lines.length, lines: lines.slice(-tail)};
+  });
+  // Signature of on-screen text; elapsed-time counters and animated dots are ignored.
+  const root = document.querySelector('main') || document.body;
+  const text = textOf(root).replace(/\d+(\.\d+)?\s*(ms|s|sec|secs|seconds?|m|min|mins|minutes?)\b/gi, '')
+    .replace(/[.\u2026]+/g, '');
+  let hash = 5381;
+  for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+  return {signature: text.length + ':' + hash, blocks};
+}
+"""
+
+
+def read_screen(page, sel):
+    """Return (signature, reasoning blocks); failures yield (None, None)."""
+    try:
+        data = page.evaluate(SCREEN_SCRIPT, {"tail": REASONING_TAIL_LINES, "selector": sel.get("reasoning") or ""})
+        return data.get("signature"), data.get("blocks") or []
+    except Exception:
+        return None, None
+
+
 def run(cmd, cwd=None, capture=True):
     return subprocess.run(cmd, cwd=cwd, check=True, text=True,
                           stdout=subprocess.PIPE if capture else None,
@@ -176,6 +268,8 @@ def selectors_from_env():
         "model_button": os.getenv("COPILOT_MODEL_BUTTON", 'button[aria-label*="model" i], button[aria-haspopup="menu"]:has-text("Auto")'),
         "temporary_chat": os.getenv("COPILOT_TEMPORARY_CHAT", 'button[aria-label*="temporary" i], [role="button"][aria-label*="temporary" i], '
                                     'button[title*="temporary" i], button[data-testid*="temporary" i]'),
+        # Optional override for reasoning headers; default detects "Reasoning"/"Reasoned for Ns" toggles.
+        "reasoning": os.getenv("COPILOT_REASONING", ""),
     }
 
 
@@ -632,6 +726,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         emit_status("browser", "Opening Copilot Chat...")
         page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
+        wait_for_ui(page)
         # Temporary chat must be enabled first: switching to it resets the model selection.
         if args.temporary_chat:
             emit_status("temporary", "Enabling Temporary chat...")
@@ -653,17 +748,40 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         emit_status("prompt", "Submitting request to Copilot...")
         send_with_retry(page, composer, sel["send"])
         emit_status("waiting", "Waiting for Copilot to generate a downloadable repository...")
-        deadline = time.time() + args.timeout
+        # The timeout is an inactivity timeout: it only runs while nothing new appears on screen
+        # (reasoning or response text). Any new output restarts it.
+        idle_limit = args.timeout
+        started = time.monotonic()
+        last_activity = started
+        last_signature = None
+        last_blocks = None
         seen = set()
-        last_update = time.monotonic()
-        while time.time() < deadline and downloaded is None:
-            if time.monotonic() - last_update >= 15:
-                emit_status("waiting", f"Still waiting for Copilot response ({int(args.timeout - max(0, deadline - time.time()))}s elapsed)...")
-                last_update = time.monotonic()
+        last_update = started
+        while downloaded is None:
+            now = time.monotonic()
+            signature, blocks = read_screen(page, sel)
+            if signature is not None and signature != last_signature:
+                if last_signature is not None:
+                    last_activity = now
+                last_signature = signature
+            if blocks is not None and blocks != last_blocks:
+                last_blocks = blocks
+                last_activity = now if blocks else last_activity
+                emit_reasoning(blocks)
+            idle = now - last_activity
+            if idle >= idle_limit:
+                break
+            if now - last_update >= 15:
+                emit_status("waiting", f"Still waiting for Copilot response ({int(now - started)}s elapsed, "
+                                       f"no new output for {int(idle)}s of {idle_limit}s allowed)...")
+                last_update = now
             candidates = page.locator(sel["download"])
             for i in range(candidates.count() - 1, -1, -1):
                 node = candidates.nth(i)
-                key = (node.get_attribute("href") or "") + (node.inner_text(timeout=2000) or "")
+                try:
+                    key = (node.get_attribute("href") or "") + (node.inner_text(timeout=2000) or "")
+                except Exception:
+                    continue
                 if key in seen:
                     continue
                 seen.add(key)
@@ -679,12 +797,12 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 except Exception:
                     continue
             if downloaded is None:
-                page.wait_for_timeout(3000)
+                page.wait_for_timeout(1500)
         if downloaded is None:
             page.screenshot(path=str(work / "copilot-timeout.png"), full_page=True)
             (work / "copilot-timeout.html").write_text(page.content(), encoding="utf-8")
             ctx.close()
-            raise SystemExit(f"No downloadable result within {args.timeout}s. Temporary diagnostics were removed with the run directory")
+            raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s. Temporary diagnostics were removed with the run directory")
         chat_response = read_chat_response(page)
         ctx.close()
     result_zip = work / f"{root.name}-modified.zip"
@@ -714,7 +832,8 @@ def main():
     fp.add_argument("--repo", default=".")
     fp.add_argument("--work-dir", default=None, help="Optional parent for automatically deleted temporary round-trip files")
     fp.add_argument("--backup-dir", default=None, help="Deprecated; rollback copies are temporary and automatically deleted")
-    fp.add_argument("--timeout", type=int, default=900)
+    fp.add_argument("--timeout", type=int, default=900,
+                    help="Seconds without new on-screen output (reasoning or response) before giving up (default: 900)")
     fp.add_argument("--model", default="GPT/GPT-6",
                     help="Provider/model pair (default: GPT/GPT-6)")
     fp.add_argument("--show-browser", action="store_true", help="Show Chromium during fixes (default: invisible)")

@@ -13,7 +13,7 @@ A sidebar prompt-and-response interface for the repository-wide `copilot_repo_ro
 
 ## Settings
 
-`copilotRoundtrip.pythonPath` (default `python`, used to create the managed virtual environment), `model` (`GPT/GPT-6`), `timeout` (900 seconds), `headless`, `temporaryChat` (`true`), `allowDirty`, `profilePath`, `workDir`, `backupDir` are exposed under **Settings → Repo Round-Trip**. For Windows, point `pythonPath` to a Python executable if `python` is not on PATH. The profile, work and backup paths should remain outside the target repo.
+`copilotRoundtrip.pythonPath` (default `python`, used to create the managed virtual environment), `model` (`GPT/GPT-6`), `timeout` (900 seconds of no new on-screen Copilot output; the timer restarts whenever reasoning or response text changes), `headless`, `temporaryChat` (`true`), `allowDirty`, `profilePath`, `workDir`, `backupDir` are exposed under **Settings → Repo Round-Trip**. For Windows, point `pythonPath` to a Python executable if `python` is not on PATH. The profile, work and backup paths should remain outside the target repo.
 
 ## Important limitations
 
@@ -30,3 +30,5 @@ Round-trip upload names use local timestamps such as `repo-20261024-191212.zip.t
 The **Show browser** checkbox beside **Sign in** controls subsequent modification runs; it is off by default. The **Temporary chat** checkbox (on by default) enables Copilot's Temporary chat before the model is selected; untick it to use a normal saved chat. The upload can take up to 180 seconds to settle; the send action retries for up to 120 seconds.
 
 During `fix`, the script streams `ROUNDTRIP_STATUS:` JSON lines to stderr for each execution phase (including periodic wait updates); stdout remains the final JSON result. The VS Code sidebar displays these updates live in **Execution activity** as a single rotating status line with a spinner while work is in progress.
+
+After opening Copilot Chat, the script waits about 2.5 seconds (with or without **Show browser**) so the Copilot UI loads properly before it is used. While Copilot works, its reasoning is streamed live (`ROUNDTRIP_REASONING:` JSON lines on stderr) into a collapsible **Reasoning** panel under **Execution activity**. Each reasoning block (for example several "Reasoned for 38s" / "Reasoned for 4s" steps in one answer) is its own collapsible section showing only its latest 10 lines; the newest block is expanded by default and your expand/collapse choices are kept while the text updates.

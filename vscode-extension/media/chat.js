@@ -131,12 +131,53 @@
   }
   // Single rotating activity line: "<latest status>" with a spinner while work is active.
   const activity={message:'',busy:false,login:false};
+  let lastReasoning=[];
   function renderActivity(){
     const running=activity.busy||activity.login;
     const text=$('activityText'), spinner=$('activitySpinner');
     const next=running?(activity.message||'Starting...'):(activity.message||'Idle');
     spinner.hidden=!running;
     if(text.textContent!==next){text.textContent=next;text.classList.remove('rotate');void text.offsetWidth;text.classList.add('rotate');}
+  }
+  // Live reasoning: an outer collapsible panel with one collapsible section per reasoning
+  // block ("Reasoning...", "Reasoned for 38s", ...), each showing only its latest 10 lines.
+  // Open/closed choices made by the user are kept while the content updates in real time.
+  const reasoningUserOpen={};
+  function renderReasoning(blocks){
+    const box=$('reasoning'), list=$('reasoningBlocks');
+    blocks=Array.isArray(blocks)?blocks:[];
+    if(!blocks.length){box.hidden=true;list.replaceChildren();for(const k of Object.keys(reasoningUserOpen))delete reasoningUserOpen[k];return;}
+    box.hidden=false;
+    const anyActive=blocks.some(b=>b.active);
+    $('reasoningSpinner').hidden=!(anyActive&&activity.busy);
+    $('reasoningTitle').textContent='Reasoning ('+blocks.length+(blocks.length===1?' block':' blocks')+')';
+    blocks.forEach((b,i)=>{
+      let d=list.children[i];
+      if(!d){
+        d=document.createElement('details');d.className='reasoning-block';
+        const sum=document.createElement('summary');
+        const title=span('reasoning-block-title','');
+        const meta=span('reasoning-block-meta','');
+        sum.append(title,meta);
+        const pre=document.createElement('pre');pre.className='reasoning-lines';
+        d.append(sum,pre);
+        // Record the user's choice; a click on the summary toggles the section.
+        sum.addEventListener('click',()=>{reasoningUserOpen[i]=!d.open;});
+        list.append(d);
+      }
+      const [sum,pre]=d.children;
+      sum.children[0].textContent=(i+1)+'. '+(b.title||'Reasoning');
+      sum.children[0].classList.toggle('active',!!b.active&&activity.busy);
+      const lines=Array.isArray(b.lines)?b.lines:[];
+      const hiddenCount=Math.max(0,(b.total||0)-lines.length);
+      sum.children[1].textContent=lines.length?(hiddenCount?'last '+lines.length+' of '+b.total+' lines':lines.length+(lines.length===1?' line':' lines')):'';
+      const text=lines.length?lines.join('\n'):(b.active?'Waiting for reasoning text...':'No reasoning text available.');
+      if(pre.textContent!==text){pre.textContent=text;pre.scrollTop=pre.scrollHeight;}
+      // Default: the latest block is expanded, earlier blocks are collapsed.
+      const open=i in reasoningUserOpen?reasoningUserOpen[i]:i===blocks.length-1;
+      if(d.open!==open)d.open=open;
+    });
+    while(list.children.length>blocks.length)list.lastChild.remove();
   }
   window.addEventListener('message',e=>{
     const m=e.data;
@@ -146,12 +187,13 @@
       if(m.type==='showBrowser' && !$('showBrowser').dataset.initialized){$('showBrowser').checked=!!m.value;$('showBrowser').dataset.initialized='true';}
       if(m.type==='temporaryChat' && !$('temporaryChat').dataset.initialized){$('temporaryChat').checked=m.value!==false;$('temporaryChat').dataset.initialized='true';}
       if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);}
-    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;$('temporaryChat').disabled=m.value;renderAttachments();}
+    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning);$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;$('temporaryChat').disabled=m.value;renderAttachments();}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
       activity.message=last?last.message:'';renderActivity();
     }
     if(m.type==='error'){activity.message=m.text;renderActivity();}
+    if(m.type==='reasoning'){lastReasoning=m.blocks||[];renderReasoning(lastReasoning);}
     if(m.type==='attached'&&Array.isArray(m.items)){for(const it of m.items)addAttachment(it);}
   });
     // Editable model combobox: pick a preset from the dropdown or type any provider/model.

@@ -58,7 +58,7 @@
           "type": "integer",
           "default": 900,
           "minimum": 1,
-          "description": "Seconds to wait for Copilot download."
+          "description": "Seconds without new on-screen Copilot output (reasoning or response) before giving up; the timer restarts whenever new output appears."
         },
         "copilotRoundtrip.allowDirty": {
           "type": "boolean",
