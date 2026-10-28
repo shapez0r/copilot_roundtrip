@@ -439,7 +439,15 @@ def read_screen(page, sel, prompt=""):
 
 
 def run(cmd, cwd=None, capture=True):
-    return subprocess.run(cmd, cwd=cwd, check=True, text=True,
+    # stdin must NOT be inherited. The quit listener thread keeps a blocking readline() on our
+    # stdin pipe (the VS Code extension's Cancel channel). On Windows a child process that
+    # inherits a synchronous pipe handle with a pending read hangs in its C runtime start-up
+    # (GetFileType on stdin blocks until that read completes), so `git rev-parse` never
+    # returned and runs stalled at "Checking repository and Git working tree...".
+    # GIT_TERMINAL_PROMPT=0 also prevents Git from ever waiting for interactive input.
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    return subprocess.run(cmd, cwd=cwd, check=True, text=True, env=env,
+                          stdin=subprocess.DEVNULL,
                           stdout=subprocess.PIPE if capture else None,
                           stderr=subprocess.PIPE if capture else None)
 
