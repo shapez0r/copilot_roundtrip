@@ -477,6 +477,7 @@
     function resizePrompt(){prompt.style.height='auto';prompt.style.height=Math.min(180,Math.max(66,prompt.scrollHeight))+'px';}
     prompt.addEventListener('input',resizePrompt);
     $('settingsToggle').addEventListener('click',()=>{const panel=$('settingsPanel');panel.hidden=!panel.hidden;$('settingsToggle').setAttribute('aria-expanded',String(!panel.hidden));});
+    document.addEventListener('mousedown',e=>{if(!$('settingsPanel').hidden&&!$('settingsPanel').contains(e.target)&&!$('settingsToggle').contains(e.target)){$('settingsPanel').hidden=true;$('settingsToggle').setAttribute('aria-expanded','false');}});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('settingsPanel').hidden){$('settingsPanel').hidden=true;$('settingsToggle').setAttribute('aria-expanded','false');$('settingsToggle').focus();}});
     vscode.postMessage({type:'ready'});
 })();
