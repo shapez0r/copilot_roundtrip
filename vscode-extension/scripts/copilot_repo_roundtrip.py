@@ -1208,7 +1208,18 @@ ZIP_LINK_SELECTOR = ('a[href*=".zip" i], a:has-text(".zip"), [role="link"]:has-t
 ZIP_NAME = re.compile(r"\bzip\b(?!\.txt)", re.I)
 # A link that did not yield a file (e.g. it was rendered before the file was ready) is retried.
 DOWNLOAD_RETRY_SECONDS = 10
-DOWNLOAD_MAX_ATTEMPTS = 6
+DOWNLOAD_MAX_BACKOFF = 6
+
+
+def download_retry_due(count, last, now):
+    "Keep retrying with a delay capped at sixty seconds."
+    return not count or now - last >= DOWNLOAD_RETRY_SECONDS * min(count, DOWNLOAD_MAX_BACKOFF)
+
+
+PREVIEW_DOWNLOAD_SELECTOR = ('a[download], button[aria-label*="download" i], '
+                             '[role="button"][aria-label*="download" i], '
+                             'button[title*="download" i], button:has-text("Download"), '
+                             '[role="button"]:has-text("Download")')
 
 
 def download_candidates(page, sel, exclude_names):
@@ -1249,27 +1260,58 @@ def _zip_name(name, fallback="copilot-result.zip"):
 
 
 def click_download(ctx, page, node, work: Path, timeout_seconds=15):
-    "Click a link and save the file it downloads (in this page or a popup it opens), else None."
+    "Click a result or its preview Download control and save the file, else return None."
+    raise_if_quit()
     got, before, url = [], set(ctx.pages), page.url
+    watched, clicked = [], set()
     def on_download(d):
         got.append(d)
     def on_page(pg):
-        pg.on("download", on_download)
+        if pg not in watched:
+            watched.append(pg)
+            pg.on("download", on_download)
     for pg in ctx.pages:
-        pg.on("download", on_download)
+        on_page(pg)
     ctx.on("page", on_page)
     try:
-        node.click(timeout=5000)
+        try:
+            node.click(timeout=5000)
+        except QuitRequested:
+            raise
+        except Exception:
+            # Download navigation can interrupt the click after the file has started.
+            pass
         deadline = time.monotonic() + timeout_seconds
         while not got and time.monotonic() < deadline:
-            pause(page, 250)
-        if not got:
-            # A plain link may have navigated the chat page itself: return to the chat.
-            if page.url != url:
+            raise_if_quit()
+            # File links can open a preview with its own Download control.
+            for pg in list(ctx.pages):
+                on_page(pg)
+                if pg not in before or (pg == page and pg.url != url):
+                    scope = pg
+                elif pg == page:
+                    scope = pg.locator('[role="dialog"]:visible')
+                else:
+                    continue
                 try:
-                    page.go_back(wait_until="domcontentloaded", timeout=30000)
+                    controls = scope.locator(PREVIEW_DOWNLOAD_SELECTOR)
+                    for i in range(controls.count()):
+                        control = controls.nth(i)
+                        key = (pg, i, control.get_attribute("aria-label"), control.inner_text())
+                        if key in clicked or not control.is_visible() or not control.is_enabled():
+                            continue
+                        clicked.add(key)
+                        control.click(timeout=2000)
+                        break
+                except QuitRequested:
+                    raise
                 except Exception:
                     pass
+                if got:
+                    break
+            if not got:
+                pause(page, 250)
+        if not got:
             return None
         target = work / _zip_name(got[0].suggested_filename)
         got[0].save_as(str(target))
@@ -1279,17 +1321,22 @@ def click_download(ctx, page, node, work: Path, timeout_seconds=15):
             ctx.remove_listener("page", on_page)
         except Exception:
             pass
-        for pg in ctx.pages:
+        for pg in watched:
             try:
                 pg.remove_listener("download", on_download)
             except Exception:
                 pass
-            # Close preview tabs opened by the link; the chat page stays open.
             if pg not in before and pg != page:
                 try:
                     pg.close()
                 except Exception:
                     pass
+        # Restore the chat even when a preview download succeeds.
+        if page.url != url:
+            try:
+                page.go_back(wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass
 
 
 FETCH_BLOB_SCRIPT = r"""
@@ -1470,7 +1517,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
             last_signature = None
             last_live = None
             live_blocks, live_answers = [], []
-            # Track download attempts as (count, timestamp) and retry links whose files are not ready.
+            # Retry unavailable files with bounded backoff until the inactivity deadline.
             attempts = {}
             upload_names = [source_txt.name] + [a.name for a in attachments]
             last_update = started
@@ -1488,7 +1535,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                     if href and href in prior_keys:
                         continue
                     count, last = attempts.get(key, (0, 0.0))
-                    if count >= DOWNLOAD_MAX_ATTEMPTS or (count and now - last < DOWNLOAD_RETRY_SECONDS):
+                    if not download_retry_due(count, last, now):
                         continue
                     attempts[key] = (count + 1, now)
                     # Fetch targets without navigation; click JavaScript-handled links as a fallback.

@@ -4,6 +4,8 @@ import importlib.util
 import os
 from pathlib import Path
 import unittest
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'copilot_repo_roundtrip.py'
 spec = importlib.util.spec_from_file_location('roundtrip', SCRIPT)
@@ -29,6 +31,14 @@ class CompletionTests(unittest.TestCase):
         for label in ('repo.zip.txt', 'zipper', 'gzip'):
             self.assertNotRegex(label, rt.ZIP_NAME)
 
+    def test_download_retries_remain_available_after_six_attempts(self):
+        self.assertTrue(rt.download_retry_due(0, 0, 0))
+        self.assertFalse(rt.download_retry_due(1, 100, 109))
+        self.assertTrue(rt.download_retry_due(1, 100, 110))
+        for count in (6, 7, 100):
+            self.assertFalse(rt.download_retry_due(count, 100, 159))
+            self.assertTrue(rt.download_retry_due(count, 100, 160))
+
     def test_download_precedes_optional_reasoning_capture(self):
         tree = ast.parse(SCRIPT.read_text())
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run_roundtrip')
@@ -41,6 +51,91 @@ class CompletionTests(unittest.TestCase):
                             and any(isinstance(b, ast.Break) for b in n.body)
                             and calls['download_candidates'] < n.lineno < calls['read_screen']
                             for n in loop.body))
+
+
+class DownloadFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.page = Mock(url='https://chat.test/conversation')
+        self.page.locator.return_value.locator.return_value.count.return_value = 0
+        self.ctx = Mock(pages=[self.page])
+        self.listeners = {}
+        self.page.on.side_effect = lambda event, callback: self.listeners.update({event: callback})
+        self.download = Mock(suggested_filename='fixed.zip')
+        self.node = Mock()
+        self.temp = TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.work = Path(self.temp.name)
+
+    def download_now(self):
+        self.listeners['download'](self.download)
+
+    def test_download_survives_interrupted_click(self):
+        def click(**kwargs):
+            self.download_now()
+            raise RuntimeError('Download navigation interrupted')
+        self.node.click.side_effect = click
+        self.assertEqual(rt.click_download(self.ctx, self.page, self.node, self.work),
+                         self.work / 'fixed.zip')
+        self.download.save_as.assert_called_once_with(str(self.work / 'fixed.zip'))
+        self.page.remove_listener.assert_called_once()
+        self.ctx.remove_listener.assert_called_once()
+
+    def test_preview_downloads_and_restores_chat(self):
+        for popup in (False, True):
+            with self.subTest(popup=popup):
+                self.setUp()
+                preview = Mock(url='https://chat.test/preview') if popup else self.page
+                control = Mock()
+                control.is_visible.return_value = True
+                control.is_enabled.return_value = True
+                control.get_attribute.return_value = 'Download'
+                control.inner_text.return_value = 'Download'
+                controls = Mock()
+                controls.count.return_value = 1
+                controls.nth.return_value = control
+                preview.locator.return_value = controls
+                def open_preview(**kwargs):
+                    if popup:
+                        self.ctx.pages.append(preview)
+                    else:
+                        self.page.url = 'https://chat.test/preview'
+                self.node.click.side_effect = open_preview
+                def download(**kwargs):
+                    callback = next(call.args[1] for call in preview.on.call_args_list
+                                    if call.args[0] == 'download')
+                    callback(self.download)
+                control.click.side_effect = download
+                self.assertEqual(rt.click_download(self.ctx, self.page, self.node, self.work),
+                                 self.work / 'fixed.zip')
+                if popup:
+                    preview.close.assert_called_once()
+                    self.page.go_back.assert_not_called()
+                else:
+                    self.page.go_back.assert_called_once()
+
+    def test_dialog_download(self):
+        control = Mock()
+        controls = self.page.locator.return_value.locator.return_value
+        controls.count.return_value = 1
+        controls.nth.return_value = control
+        control.get_attribute.return_value = 'Download'
+        control.inner_text.return_value = 'Download'
+        control.click.side_effect = lambda **kwargs: self.download_now()
+        self.assertEqual(rt.click_download(self.ctx, self.page, self.node, self.work),
+                         self.work / 'fixed.zip')
+
+    def test_cancellation_is_not_swallowed(self):
+        self.node.click.side_effect = rt.QuitRequested()
+        with self.assertRaises(rt.QuitRequested):
+            rt.click_download(self.ctx, self.page, self.node, self.work)
+        self.download.save_as.assert_not_called()
+        self.ctx.remove_listener.assert_called_once()
+
+    def test_no_download_returns_none_and_restores_chat(self):
+        self.node.click.side_effect = lambda **kwargs: setattr(self.page, 'url', 'https://chat.test/preview')
+        self.assertIsNone(rt.click_download(self.ctx, self.page, self.node, self.work, timeout_seconds=0))
+        self.page.go_back.assert_called_once()
+        self.download.save_as.assert_not_called()
 
 
 class BrowserTests(unittest.TestCase):
