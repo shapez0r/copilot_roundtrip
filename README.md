@@ -172,7 +172,7 @@ The command-line workflow and archive replacement details are documented above.
 
 ## Chat history
 
-The sidebar keeps a chat history like a regular AI coding-assistant extension. **New chat** (also in the view title bar) starts a conversation, and **History** lists the saved chats of the current workspace (newest first, with time, number of prompts and model). Click a chat to reopen it, or **×** to remove it from the history (the Copilot conversation itself is not deleted).
+The sidebar keeps a chat history like a regular AI coding-assistant extension. The chat panel's **New chat** (+) button starts a conversation, and its **History** button lists the saved chats of the current workspace (newest first, with time, number of prompts and model). Click a chat to reopen it, or **×** to remove it from the history (the Copilot conversation itself is not deleted).
 
 - A chat whose first prompt is run with **Temporary chat** off is saved in the history (per workspace, kept across VS Code restarts). With Temporary chat on, the conversation is not saved and every prompt runs in a new Copilot temporary chat.
 - The Temporary chat choice is fixed after a chat's first prompt; use **New chat** to change it.

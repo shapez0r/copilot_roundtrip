@@ -51,20 +51,6 @@
         "icon": "$(history)"
       }
     ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "copilotRoundtrip.newChat",
-          "when": "view == copilotRoundtrip.chat",
-          "group": "navigation@1"
-        },
-        {
-          "command": "copilotRoundtrip.showHistory",
-          "when": "view == copilotRoundtrip.chat",
-          "group": "navigation@2"
-        }
-      ]
-    },
     "configuration": {
       "title": "Repo Round-Trip",
       "properties": {

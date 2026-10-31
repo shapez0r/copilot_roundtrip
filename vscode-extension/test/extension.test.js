@@ -24,3 +24,18 @@ const {parseChatLine,chatTitle,normalizeChats,chatSummaries}=require('../extensi
 test('saved chats continue the same Copilot chat URL',()=>{const a=buildArgs('/script.py','fix','/repo',{model:'GPT/GPT-6',timeout:900,chatUrl:'https://m365.cloud.microsoft/chat/conversation/abc',temporaryChat:true});assert.equal(a[a.indexOf('--chat-url')+1],'https://m365.cloud.microsoft/chat/conversation/abc');assert.ok(a.includes('--no-temporary-chat'));assert.equal(a[2],'fix');const n=buildArgs('/script.py','fix','/repo',{model:'GPT/GPT-6',timeout:900});assert.ok(!n.includes('--chat-url'))});
 test('chat URL lines are parsed',()=>{assert.equal(parseChatLine('ROUNDTRIP_CHAT:{"url":"https://m365.cloud.microsoft/chat/conversation/abc"}'),'https://m365.cloud.microsoft/chat/conversation/abc');assert.equal(parseChatLine('ROUNDTRIP_CHAT:{"url":"javascript:alert(1)"}'),null);assert.equal(parseChatLine('ROUNDTRIP_CHAT:{'),null);assert.equal(parseChatLine('ROUNDTRIP_STATUS:{}'),null)});
 test('chat history titles, order and summaries',()=>{assert.equal(chatTitle('  Add   a README  '),'Add a README');assert.equal(chatTitle('x'.repeat(80)).length,60);assert.equal(chatTitle(''),'New chat');const list=normalizeChats([{id:'a',updated:1,messages:[{role:'user',text:'p'}]},null,{id:'b',updated:5,messages:[],copilotUrl:'https://x/c'},{id:'c'}]);assert.deepEqual(list.map(c=>c.id),['b','a']);const s=chatSummaries(list,'a');assert.equal(s[0].linked,true);assert.equal(s[1].prompts,1);assert.equal(s[1].active,true)});
+
+
+test('chat actions appear in the panel without duplicate view-title buttons', () => {
+  const manifest = require('../package.json');
+  const actions = ['copilotRoundtrip.newChat', 'copilotRoundtrip.showHistory'];
+  const titleItems = manifest.contributes.menus?.['view/title'] || [];
+  for (const command of actions) {
+    assert.ok(manifest.contributes.commands.some(item => item.command === command));
+    assert.ok(!titleItems.some(item => item.command === command));
+  }
+  const source = fsT.readFileSync(pathT.join(__dirname, '../extension.js'), 'utf8');
+  for (const id of ['newChat', 'historyToggle']) {
+    assert.equal((source.match(new RegExp('id="' + id + '"', 'g')) || []).length, 1);
+  }
+});
