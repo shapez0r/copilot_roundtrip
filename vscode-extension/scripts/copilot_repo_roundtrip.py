@@ -578,9 +578,12 @@ async (args) => {
       if (!step) { step = {title: active && !titleRe.test(title) ? title : 'Reasoning', lines: []}; steps.push(step); }
       step.lines.push(line);
     }
-    // "Coding and executing" steps are kept as empty steps: their title is shown, their code never.
-    const kept = steps.map(s => omitRe.test(s.title) ? {title: s.title, total: 0, lines: []}
-      : {title: s.title, total: s.lines.length, lines: s.lines.slice(-tail)}).slice(-maxSteps);
+    // Keep completed titled rows distinct from expandable thought details.
+    const kept = steps.map(s => {
+      if (omitRe.test(s.title)) return {title: s.title, kind: 'coding', total: 0, lines: []};
+      const kind = titleRe.test(s.title) || s.lines.length ? 'thought' : 'completed';
+      return {title: s.title, kind, total: s.lines.length, lines: s.lines.slice(-tail)};
+    }).slice(-maxSteps);
     const lines = [];
     for (const s of steps) if (!omitRe.test(s.title)) lines.push(...s.lines);
     return {index, title, active, total: lines.length, lines: lines.slice(-tail), steps: kept};

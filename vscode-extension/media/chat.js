@@ -126,11 +126,17 @@
   let taskUserOpen=true, workUserOpen=true;
   const thoughtUserOpen={};
   const CODING_STEP=/^(coding\b|executing code\b|running code\b)/i;
+  const THOUGHT_STEP=/^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
   const CODING_PLACEHOLDER='Code and command output are hidden.';
   const liveItems=new Map();
   function sectionSteps(b){
     const steps=(Array.isArray(b.steps)?b.steps:[]).filter(s=>s&&typeof s==='object')
-      .map(s=>CODING_STEP.test(String(s.title||''))?{title:s.title,lines:[],total:0,coding:true}:s);
+      .map(s=>{
+        const title=String(s.title||''), lines=Array.isArray(s.lines)?s.lines:[], total=Math.max(Number(s.total)||0,lines.length);
+        if(s.kind==='coding'||CODING_STEP.test(title))return {title,kind:'coding',lines:[],total:0,coding:true};
+        if(s.kind==='completed'||(!THOUGHT_STEP.test(title)&&total===0))return {title,kind:'completed',lines:[],total:0};
+        return {...s,title,kind:'thought',lines,total};
+      });
     if(steps.length)return steps;
     const lines=Array.isArray(b.lines)?b.lines:[];
     return lines.length?[{title:'Reasoning',lines,total:b.total||lines.length}]:[];
@@ -220,6 +226,12 @@
     toggle.addEventListener('click',()=>{thoughtUserOpen[key]=!open;renderReasoning(lastReasoning,lastAnswers);});
     item.append(toggle,prose);return item;
   }
+  function completedStepItem(step){
+    const item=document.createElement('div');item.className='work-completed';
+    item.setAttribute('aria-label',(step.title||'Completed step')+': completed');
+    const marker=span('work-completed-state','\u2713');marker.setAttribute('aria-hidden','true');
+    item.append(marker,span('work-completed-title',step.title||'Completed step'));return item;
+  }
   function updateWork(blocks,byAfter,lastAfter){
     const d=workItem(), head=d.firstChild, timeline=d.lastChild;
     head.setAttribute('aria-expanded',String(workUserOpen));head.title=workUserOpen?'Collapse working steps':'Expand working steps';
@@ -229,7 +241,7 @@
       const top=document.createElement('div');top.className='work-step-top';
       const marker=span('work-step-state'+(block.active?' spinner':''),block.active?'':'\u2713');marker.setAttribute('aria-hidden','true');
       top.append(marker,span('work-step-title',block.title||'Reasoning'));step.append(top);
-      sectionSteps(block).forEach((detail,k)=>step.append(thoughtItem(i,k,detail)));
+      sectionSteps(block).forEach((detail,k)=>step.append(detail.kind==='completed'?completedStepItem(detail):thoughtItem(i,k,detail)));
       if(byAfter.has(i+1))step.append(updateAnswer(i+1,byAfter.get(i+1),lastAfter,true));
       timeline.append(step);
     });

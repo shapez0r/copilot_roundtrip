@@ -121,6 +121,9 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .thought-prose{margin:6px 0 0 17px;max-height:18em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.55;user-select:text;-webkit-user-select:text}
 .thought-prose[hidden]{display:none}
 .thought.coding .thought-prose{font-style:italic;color:var(--vscode-descriptionForeground)}
+.work-completed{display:grid;grid-template-columns:15px minmax(0,1fr);align-items:start;gap:6px;margin:7px 0 0 3px;color:var(--vscode-descriptionForeground);font-size:11px;line-height:1.4}
+.work-completed-state{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;color:var(--vscode-descriptionForeground);font-size:12px}
+.work-completed-title{min-width:0;overflow-wrap:anywhere}
 @keyframes reasoning-pulse{50%{opacity:.3}}
 @media (prefers-reduced-motion:reduce){.task-chevron,.work-chevron,.thought-chevron{transition:none}.task-state.active,.task-row-state.active{animation-duration:2s}}
 /* Live text after a reasoning step remains inside that step's timeline entry. */

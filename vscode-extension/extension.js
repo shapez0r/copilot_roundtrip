@@ -37,6 +37,7 @@ const REASONING_TAIL = 10;
 const ANSWER_MAX_CHARS = 4000;
 // Stream reasoning sections and interleaved answers; coding steps expose titles only.
 const OMIT_STEP = /^(coding\b|executing code\b|running code\b)/i;
+const THOUGHT_STEP = /^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
 function parseLiveLine(line) {
   if (!line.startsWith(REASONING_PREFIX)) return null;
   try {
@@ -47,9 +48,12 @@ function parseLiveLine(line) {
       const steps = (Array.isArray(b.steps) ? b.steps : []).filter(st => st && typeof st === 'object')
         .map(st => {
           const title = String(st.title || 'Reasoning');
-          if (OMIT_STEP.test(title)) return {title, total: 0, lines: [], hidden: true};
           const stLines = (Array.isArray(st.lines) ? st.lines : []).map(String).slice(-REASONING_TAIL);
-          return {title, total: Math.max(Number(st.total) || 0, stLines.length), lines: stLines};
+          const total = Math.max(Number(st.total) || 0, stLines.length);
+          const suppliedKind = /^(thought|completed|coding)$/.test(String(st.kind || '')) ? String(st.kind) : '';
+          const kind = suppliedKind || (OMIT_STEP.test(title) ? 'coding' : (!THOUGHT_STEP.test(title) && total === 0 ? 'completed' : 'thought'));
+          if (kind === 'coding') return {title, kind, total: 0, lines: [], hidden: true};
+          return {title, kind, total, lines: stLines};
         });
       return {index: i, title: String(b.title || 'Reasoning'), active: b.active === true,
         total: Math.max(Number(b.total) || 0, lines.length), lines, steps};

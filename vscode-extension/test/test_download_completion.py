@@ -253,7 +253,9 @@ class BrowserTests(unittest.TestCase):
         _, blocks, answers = rt.read_screen(self.page, self.sel)
         self.assertEqual(len(blocks), 1)
         self.assertFalse(blocks[0]['active'])
-        self.assertEqual(blocks[0]['steps'], [{'title': 'Coding and executing', 'total': 0, 'lines': []}])
+        self.assertEqual(blocks[0]['steps'], [
+            {'title': 'Coding and executing', 'kind': 'coding', 'total': 0, 'lines': []}
+        ])
         self.assertNotIn('secret_code', str((blocks, answers)))
         self.assertEqual(len(rt.download_candidates(self.page, self.sel, [])), 1)
         self.assertTrue(rt.wait_for_response_end(self.page, self.sel, timeout_seconds=1))
@@ -278,6 +280,20 @@ class BrowserTests(unittest.TestCase):
         self.assertTrue(self.page.locator('#task').evaluate('e => e.open'))
         self.assertEqual(rt.read_task_cards(self.page), expected)
         self.assertTrue(self.page.locator('#task').evaluate('e => e.open'))
+
+    def test_completed_titled_step_is_distinct_from_thought_details(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <details open><summary>Worked for 1m</summary><div>
+            <details open><summary>Thought process</summary><p>Inspecting the implementation.</p></details>
+            <div><span aria-label="Completed">&#10003;</span><span>Reviewing Python comments</span></div>
+            <details open><summary>Thought process</summary><p>Preparing the tests.</p></details>
+          </div></details></article></main>''')
+        _, blocks, _ = rt.read_screen(self.page, self.sel)
+        self.assertEqual([(step['title'], step['kind']) for step in blocks[0]['steps']], [
+            ('Thought process', 'thought'),
+            ('Reviewing Python comments', 'completed'),
+            ('Thought process', 'thought'),
+        ])
 
     def test_stop_control_in_composer_or_task_card_is_running_signal(self):
         cases = (
