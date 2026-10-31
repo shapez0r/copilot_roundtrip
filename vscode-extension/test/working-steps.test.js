@@ -7,7 +7,9 @@ const vm = require('node:vm');
 function view() {
   const source = fs.readFileSync(path.join(__dirname, '../media/chat.js'), 'utf8');
   function element() {
-    const el = {children: [], attributes: {}, events: {}, textContent: '', hidden: false,
+    const el = {children: [], attributes: {}, events: {}, hidden: false,
+      get textContent() { return this.children.length ? this.children.map(child => child.textContent).join('') : (this.text || ''); },
+      set textContent(value) { this.children = []; this.text = value; },
       setAttribute(key, value) { this.attributes[key] = value; },
       addEventListener(key, fn) { this.events[key] = fn; },
       append(...items) { for (const item of items) { item.parent = this; this.children.push(item); } },
@@ -91,4 +93,23 @@ test('summary animation respects reduced motion', () => {
   const css = fs.readFileSync(path.join(__dirname, '../media/chat.css'), 'utf8');
   assert.match(css, /\.work-title\.rotate\{animation:activity-rotate/);
   assert.match(css, /@media \(prefers-reduced-motion:reduce\).*\.work-title\.rotate\{animation:none\}/);
+});
+
+test('summary keeps the fixed label bold and the changing step separate', () => {
+  const v = view(); v.update([block('Inspecting files')]);
+  const title = v.work().firstChild.children[1];
+  assert.equal(title.children[0].className, 'work-title-prefix');
+  assert.equal(title.children[0].textContent, 'Working through the steps: ');
+  assert.equal(title.children[1].className, 'work-title-step');
+  v.update([block('Testing')]);
+  assert.equal(title.children[1].textContent, 'Testing');
+  const css = fs.readFileSync(path.join(__dirname, '../media/chat.css'), 'utf8');
+  assert.match(css, /\.work-title-prefix\{font-weight:700\}/);
+  assert.match(css, /\.work-title-step\{font-weight:400\}/);
+});
+test('active indicators use breathing diamonds and respect reduced motion', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../media/chat.css'), 'utf8');
+  assert.ok(!css.includes('activity-spin'));
+  assert.match(css, /animation:activity-breathe 2.4s ease-in-out infinite/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\).*\.spinner::before,\.task-state.active::before,\.task-row-state.active::before\{animation:none/);
 });

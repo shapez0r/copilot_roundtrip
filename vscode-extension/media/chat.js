@@ -199,7 +199,8 @@
     const head=document.createElement('button');head.type='button';head.className='work-head';
     const icon=span('work-state','');icon.setAttribute('aria-hidden','true');
     const chev=span('work-chevron','\u2304');chev.setAttribute('aria-hidden','true');
-    const title=span('work-title','Working through the steps');
+    const title=span('work-title','');
+    title.append(span('work-title-prefix','Working through the steps: '),span('work-title-step',''));
     title.setAttribute('role','status');title.setAttribute('aria-live','polite');
     head.append(icon,title,span('work-toggle-label','Show steps'),chev);
     const timeline=document.createElement('div');timeline.className='work-timeline';timeline.id='workingSteps';
@@ -253,7 +254,7 @@
     marker.className='work-state'+(running?' spinner':'');marker.textContent=running?'':'\u2713';
     const next='Working through the steps: '+workSummary(blocks);
     if(title.textContent!==next){
-      title.textContent=next;title.classList.remove('rotate');void title.offsetWidth;title.classList.add('rotate');
+      title.children[1].textContent=workSummary(blocks);title.classList.remove('rotate');void title.offsetWidth;title.classList.add('rotate');
     }
     title.title=next;
     head.children[2].textContent=workUserOpen?'Hide steps':'Show steps';
