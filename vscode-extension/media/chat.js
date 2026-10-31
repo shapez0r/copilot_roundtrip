@@ -23,9 +23,7 @@
     if(!value)return;
     vscode.postMessage({type:'copy',text:value});
   }
-  // Copy selected chat text with Ctrl/Cmd+C (or Ctrl+Insert / Edit > Copy).
-  // VS Code webview views do not reliably forward keyboard copy, and its own copy command runs
-  // document.execCommand('copy'), so handle both the keystroke and the resulting 'copy' event.
+  // Handle keyboard and copy events through the extension host clipboard.
   function chatSelection(){
     const sel=window.getSelection();
     if(!sel||sel.isCollapsed||!sel.rangeCount)return '';
@@ -140,16 +138,7 @@
     spinner.hidden=!running;
     if(text.textContent!==next){text.textContent=next;text.classList.remove('rotate');void text.offsetWidth;text.classList.add('rotate');}
   }
-  // Live response, laid out like the Copilot web UI. In on-screen order it shows the model's
-  // intermediate (live) answers interleaved with its reasoning sections ("answer", section,
-  // "answer", section, ..., final answer). Each section is one collapsible header:
-  //  - while running, the header shows the current step name ("Reasoning", "Creating file", ...)
-  //    with an activity icon, and the collapsed header previews that step's latest text below it;
-  //  - when finished, the header becomes "Reasoned for 8m 6s" and shows nothing while collapsed;
-  //  - expanded, it lists the section's steps (check icon + step name + text, latest 10 lines each).
-  // "Coding and executing" steps are shown as empty, collapsible steps: their code is never shown,
-  // expanding one only shows CODING_PLACEHOLDER. Sections start collapsed, as in the web UI, and
-  // expand/collapse choices made by the user are kept while content updates.
+  // Render interleaved answers and collapsible steps, preserving expansion state and hiding code.
   const reasoningUserOpen={}, codingUserOpen={};
   const CODING_STEP=/^(coding\b|executing code\b|running code\b)/i;
   const CODING_PLACEHOLDER='AI coded something here, hidden for better viewing purposes. And basically who cares';
@@ -233,8 +222,7 @@
       const el=answerItem(k), pre=el.firstChild, text=byAfter.get(k);
       // The newest answer while the run is busy is still streaming.
       el.classList.toggle('active',activity.busy&&k===lastAfter&&k===blocks.length);
-      // Short interim answers between "Reasoned for ..." sections ("Now the Python scraper changes.")
-      // are shown in full as plain text lines, like in the web UI.
+      // Show interim answers in full between reasoning sections.
       el.classList.toggle('interim',k<blocks.length);
       if(pre.textContent!==text){pre.textContent=text;pre.scrollTop=pre.scrollHeight;}
       ordered.push(el);
@@ -421,10 +409,7 @@
     form.requestSubmit($('send'));
   });
   $('cancel').addEventListener('click',()=>vscode.postMessage({type:'cancel'}));
-  // Chat history, like a coding assistant's chat history: New chat, and a History list of saved chats
-  // (chats run with Temporary chat off). Every prompt of a saved chat continues the same Copilot chat.
-  // The Temporary chat choice belongs to a conversation: it is set before its first prompt and locked
-  // afterwards (a saved chat stays saved, a temporary session stays temporary) until New chat.
+  // Lock saved or temporary mode after the first prompt until New chat.
   let chats=[], chatState={id:null,temporary:null,started:false,linked:false,title:''}, tempPref=true;
   $('temporaryChat').addEventListener('change',()=>{if(!chatLocked())tempPref=$('temporaryChat').checked;});
   function chatLocked(){return !!chatState.id||!!chatState.started;}

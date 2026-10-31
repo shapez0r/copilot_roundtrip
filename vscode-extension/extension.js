@@ -26,11 +26,7 @@ const REASONING_PREFIX = 'ROUNDTRIP_REASONING:';
 const QUIT_GRACE_MS = 30000;
 const REASONING_TAIL = 10;
 const ANSWER_MAX_CHARS = 4000;
-// Live output streamed by the script: reasoning sections [{title, active, total, lines:[latest <=10 lines],
-// steps:[{title, total, lines}]}] (title = current step name while running, "Reasoned for ..." when done)
-// and intermediate answers [{after, text}] shown after the first `after` reasoning sections.
-// "Coding and executing" steps hold only code and its output: they are kept as empty steps (no
-// code is ever displayed); the sidebar shows a placeholder text when such a step is expanded.
+// Stream reasoning sections and interleaved answers; coding steps expose titles only.
 const OMIT_STEP = /^(coding\b|executing code\b|running code\b)/i;
 function parseLiveLine(line) {
   if (!line.startsWith(REASONING_PREFIX)) return null;
@@ -69,8 +65,7 @@ function parseChatLine(line) {
     return /^https:\/\/\S+$/i.test(url) ? url : null;
   } catch (_) { return null; }
 }
-// Chat history, like the chat history of a coding assistant: chats run with Temporary chat off are
-// kept per workspace and can be reopened and continued. Temporary chats are never saved.
+// Persist saved chats per workspace; never save temporary chats.
 const CHATS_KEY = 'copilotRoundtrip.chats';
 const CURRENT_CHAT_KEY = 'copilotRoundtrip.currentChat';
 const MAX_CHATS = 100;
@@ -194,8 +189,7 @@ function currentRepo() {
   return folder ? folder.uri.fsPath : null;
 }
 function nonce() { return crypto.randomBytes(16).toString('hex'); }
-// Keep Playwright out of the system Python and outside the installed VSIX.
-// Both Sign in and Modify repository use this same managed interpreter.
+// Use one private Playwright interpreter for sign-in and repository changes.
 let runtimeSetup;
 function runSetup(executable, args, output, progress) {
   return new Promise((resolve, reject) => {
@@ -242,8 +236,7 @@ async function ensureRuntime(context, cfg, output, progress) {
 class ChatProvider {
   constructor(context, output) {
     this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; this.loginProc=null; this.reasoning={blocks:[],answers:[]};
-    // Current conversation: a saved chat (currentId), or an unsaved session that is temporary when
-    // this.temporary is true (null = nothing sent yet, decided by the first prompt).
+    // The first prompt selects a saved or temporary conversation.
     this.chats=normalizeChats(context.workspaceState.get(CHATS_KEY,[]));
     this.currentId=null; this.temporary=null;
     const chat=this.chats.find(c=>c.id===context.workspaceState.get(CURRENT_CHAT_KEY,null));
@@ -372,8 +365,7 @@ class ChatProvider {
     else this.post({type:'error',text:'Dropped item is not a local file.'});
   }
   finishLogin() { if(this.loginProc && this.loginProc.stdin.writable) { this.updateProgress('login','Finishing browser sign-in...'); this.loginProc.stdin.write('\n'); } }
-  // Cancel works like pressing Q in the script: it clicks Stop on the running Copilot response
-  // first and only then quits. The process is killed only if it does not exit in time.
+  // Cancel clicks Stop before exiting; kill only after the grace period.
   cancel() {
     if(!this.busy || this.cancelRequested) return;
     this.cancelRequested=true;
@@ -394,8 +386,7 @@ class ChatProvider {
     cfg.model=typeof model==='string' ? model.trim() : '';
       if(!/^[^/\s]+\/[^/]+$/.test(cfg.model)) { this.updateProgress('error','Enter a model as provider/model (for example GPT/GPT-6).'); return; }
       cfg.showBrowser=showBrowser===true;
-    // The first prompt decides whether the conversation is temporary (not saved) or a saved chat.
-    // Every later prompt of a saved chat continues the same Copilot conversation in the web UI.
+    // The first prompt fixes chat persistence; saved prompts reuse the conversation.
     let chat=this.currentChat();
     if(!chat && this.temporary===null) this.temporary=temporaryChat!==false;
     if(!chat && this.temporary===false) {

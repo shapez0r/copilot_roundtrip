@@ -1,7 +1,4 @@
-"""Regression checks: python -m unittest discover -s test -p 'test_*.py'.
-
-Browser checks require Playwright and its Chromium (or ROUNDTRIP_TEST_CHROMIUM).
-"""
+"""Test download completion; browser checks require Playwright and Chromium."""
 import ast
 import importlib.util
 import os
@@ -15,6 +12,17 @@ spec.loader.exec_module(rt)
 
 
 class CompletionTests(unittest.TestCase):
+    def test_prompts_include_repository_maintenance_instructions(self):
+        for template in (rt.BASE_PROMPT, rt.FOLLOWUP_PROMPT):
+            with self.subTest(template=template):
+                prompt = template.format(request='Update the tests')
+                self.assertIn('AGENTS.md', prompt)
+                self.assertIn('.github/copilot-instructions.md', prompt)
+                self.assertIn('README', prompt)
+                self.assertIn('comments in all repository files', prompt)
+                self.assertIn('no historical references', prompt)
+                self.assertTrue(prompt.endswith('To fix: Update the tests'))
+
     def test_zip_labels_without_filename(self):
         for label in ('Download the complete fixed repository ZIP', 'repo-fixed.zip'):
             self.assertRegex(label, rt.ZIP_NAME)

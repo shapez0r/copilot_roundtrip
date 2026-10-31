@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Experimental M365 Copilot Chat browser automation for a local Git worktree.
-
-It archives the Git index (therefore excludes .git and untracked files), uploads the
-ZIP bytes under a .txt filename, sends a repair prompt, waits for a downloaded file,
-validates the returned archive, and replaces the worktree after a backup.
-
-UI automation is unsupported and selectors can change. Run `login` once, then `fix`.
-"""
+"""Archive committed Git files, request Copilot changes, and safely replace the worktree."""
 from __future__ import annotations
 import argparse, atexit, base64, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, zipfile
 from pathlib import Path, PurePosixPath
@@ -16,17 +9,24 @@ BASE_PROMPT = (
     "Here is my repository archive. The attached .txt file contains ZIP bytes. "
     "Rename it to .zip and extract it. Make only the requested fixes, preserve all other files, "
     "then return the complete fixed repository as a downloadable ZIP file. "
-    "Do not include a .git directory. To fix: {request}"
+    "Do not include a .git directory. Read and follow AGENTS.md and "
+    ".github/copilot-instructions.md when present. After changes, review README files and "
+    "comments in all repository files: keep README content logically correct and aligned "
+    "with the repository state, and comments concise, with no historical references. "
+    "To fix: {request}"
 )
-# Follow-up prompts in a saved (non-temporary) chat continue the same Copilot conversation. The
-# Copilot sandbox is erased between prompts, so every prompt supplies the current repository state.
+# Attach the current repository snapshot to every saved-chat follow-up.
 FOLLOWUP_PROMPT = (
     "Here is the current state of my repository archive for this follow-up request. It supersedes any "
     "earlier archive in this chat (your sandbox was reset, so earlier files are no longer available). "
     "The attached .txt file contains ZIP bytes. "
     "Rename it to .zip and extract it. Make only the requested fixes, preserve all other files, "
     "then return the complete fixed repository as a downloadable ZIP file. "
-    "Do not include a .git directory. To fix: {request}"
+    "Do not include a .git directory. Read and follow AGENTS.md and "
+    ".github/copilot-instructions.md when present. After changes, review README files and "
+    "comments in all repository files: keep README content logically correct and aligned "
+    "with the repository state, and comments concise, with no historical references. "
+    "To fix: {request}"
 )
 
 
@@ -100,14 +100,7 @@ ASSISTANT_SELECTORS = (
 
 
 def emit_reasoning(blocks, answers=None):
-    """Stream the latest reasoning blocks and intermediate answers on stderr (one JSON line per change).
-
-    blocks: [{"title", "active", "total", "lines", "steps": [{"title", "total", "lines"}]}] - one per
-    reasoning section; "title" is the current step name while running, "Reasoned for ..." when done.
-
-    answers: [{"after": N, "text": ...}] - live answer text shown after the first N reasoning blocks
-    (after=0 is text before the first block), as in "answer / Reasoned for 38s / answer / ...".
-    """
+    """Stream reasoning blocks and answers as JSON lines; answer.after counts preceding blocks."""
     print(REASONING_PREFIX + json.dumps({"blocks": blocks, "answers": answers or []}),
           file=sys.stderr, flush=True)
 
@@ -127,17 +120,7 @@ def strip_speaker_label(text):
 
 
 def merge_live(prev_blocks, prev_answers, blocks, answers, final=False):
-    """Keep already streamed output when Copilot re-renders its final message.
-
-    With final=True (the read after the response has finished), the answers on screen are
-    authoritative: the interim answers are exactly the ones the web UI shows at that moment, so
-    earlier placeholders ("Taking a look...") that the web UI replaced are not kept. Previously
-    streamed answers are only kept when the final read finds no answer text at all.
-
-    When a response finishes, Copilot collapses the reasoning blocks and re-renders the
-    message, so a late read can return empty reasoning lines or only a "Copilot said:" label.
-    Previously seen reasoning lines and longer answer text are kept instead of being lost.
-    """
+    """Merge streamed steps and answers; final visible answers take precedence when available."""
     prev_blocks = prev_blocks or []
     merged_blocks = []
     for i, block in enumerate(blocks or []):
@@ -175,9 +158,7 @@ def merge_live(prev_blocks, prev_answers, blocks, answers, final=False):
         after = answer.get("after", 0)
         old = texts.get(after, "")
         current[after] = text
-        # The latest on-screen text wins (a short placeholder such as "Checking that now..." is replaced
-        # by the interim answer shown later at that position); only a truncated re-render of the
-        # same text keeps the longer text already streamed.
+        # Prefer current visible text; retain longer streamed text when a re-render truncates it.
         if not (len(text) < len(old) and text.lstrip("\u2026") in old):
             texts[after] = text
     # Text that moved to another position on screen is not shown twice.
@@ -190,9 +171,7 @@ def merge_live(prev_blocks, prev_answers, blocks, answers, final=False):
     return merged_blocks, merged_answers
 
 
-# Quit handling: pressing Q in the terminal, or a "q" line on stdin (sent by the VS Code
-# extension's Cancel button), requests a quit. Once the prompt may have been submitted, the
-# Copilot response is stopped (Stop button clicked) before the browser closes and the script exits.
+# Q or Cancel requests Stop before closing the browser and exiting.
 QUIT_EXIT_CODE = 130
 _quit_event = threading.Event()
 
@@ -334,20 +313,12 @@ def wait_for_ui(page, ms=UI_SETTLE_MS):
     page.wait_for_timeout(ms)
 
 
-# Collects (1) a cheap signature of the visible chat text, used to detect on-screen output,
-# and (2) the reasoning sections, as in the Copilot web UI: while a section runs its header shows
-# the current step name ("Reasoning", "Creating file", "Coding and executing", ...); when it
-# finishes the header becomes "Reasoned for 8m 6s". Each section holds steps (step title + text).
-# Collapsed sections are expanded once per header title so their steps can be read in both
-# visible and hidden browser modes. (3) The live intermediate answers: the latest assistant
-# message's text split at those sections. Code blocks are left out everywhere, and the
-# "Coding and executing" steps are kept as empty steps (title only, their code is never sent).
+# Capture visible-output signatures, reasoning steps and interleaved answers without code blocks.
 SCREEN_SCRIPT = r"""
 async (args) => {
   const tail = args.tail, custom = args.selector;
   const titleRe = /^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
-  // Section headers also show the current step name while running ("Creating file",
-  // "Coding and executing", "Searching the web", ...): a short "-ing" phrase without punctuation.
+  // Match short step-name headers while a section is running.
   const stepRe = /^[A-Z][a-z]+ing(?:\s+(?:and\s+)?[a-z][a-z-]*){0,3}$/;
   const doneRe = /^\s*(reasoned|thought|worked)\s+for\b/i;
   // "Coding and executing" steps only hold code and its output, which are not shown (empty steps).
@@ -355,8 +326,7 @@ async (args) => {
   const lineMax = 2000, maxSteps = 30;
   const visible = el => !!el && el.getClientRects().length > 0;
   const textOf = el => (el && (el.innerText || el.textContent) || '').trim();
-  // Screen-reader-only text (visually hidden status/live regions such as a repeated "Checking that
-  // now...") is not shown in the web UI, so it is never streamed as an answer.
+  // Exclude screen-reader-only text from streamed answers.
   const srOnly = (el, cs) => {
     if (cs.position !== 'absolute' && cs.position !== 'fixed') return false;
     if (/rect\(\s*0(px)?[\s,]+0(px)?[\s,]+0(px)?[\s,]+0(px)?\s*\)/.test(cs.clip || '') ||
@@ -364,10 +334,7 @@ async (args) => {
     const r = el.getBoundingClientRect();
     return (r.width <= 1 || r.height <= 1) && /hidden|clip/.test(cs.overflow || '');
   };
-  // Text that is in the DOM but not shown in the web UI: collapsed panels (zero height with
-  // overflow hidden, kept for the expand animation), fully transparent or content-hidden elements.
-  // Copilot keeps earlier interim answers and collapsed section content this way; reading them
-  // showed stale text ("Taking a look...") instead of what the web UI displays.
+  // Exclude collapsed, transparent and content-hidden elements.
   const notShown = (el, cs) => {
     if (srOnly(el, cs) || el.hidden || el.hasAttribute('inert') || cs.opacity === '0' ||
         cs.contentVisibility === 'hidden') return true;
@@ -375,8 +342,7 @@ async (args) => {
     const r = el.getBoundingClientRect();
     return r.height <= 1 || r.width <= 1;
   };
-  // Code blocks (e.g. under "Coding and executing") are not streamed: only the step titles and
-  // prose are shown, never the code itself. Inline `code` inside sentences is kept.
+  // Stream prose and inline code, but omit code blocks.
   const codeSel = 'pre, [class*="code-block" i], [class*="codeblock" i], [class*="code_block" i]';
   const isCode = el => {
     if (!el || el.nodeType !== 1) return false;
@@ -433,8 +399,7 @@ async (args) => {
   });
   // Keep the outermost header when several nested elements match the same title.
   heads = heads.filter(h => !heads.some(o => o !== h && o.contains(h)));
-  // Expandable steps inside an expanded section (e.g. "Coding and executing" with its code) sit
-  // deeper in the DOM than the section headers: they belong to a section, they are not sections.
+  // Nested step toggles belong to their enclosing section.
   const depth = el => { let d = 0; for (let e = el; e; e = e.parentElement) d++; return d; };
   const nestedIn = (h, o) => {
     if (depth(o) >= depth(h) || !(o.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
@@ -451,17 +416,7 @@ async (args) => {
     return inner ? inner.getAttribute('aria-expanded') : null;
   };
   const isHead = el => heads.some(h => h === el || el.contains(h));
-  // Element holding a (non-<summary>) header's reasoning text.
-  //
-  // Interim answers ("Now the Python scraper changes.") sit right after a "Reasoned for ..." section,
-  // so the element following a section header may be either the section's own content panel or
-  // the next interim answer. Taking the wrong one hid every interim answer (it was treated as the
-  // section's content and skipped), so a candidate is only accepted as content when that is certain:
-  //  - it is linked to the header (aria-controls / aria-labelledby), or
-  //  - it is found next to the header without leaving the header's own wrappers, and it disappears
-  //    when the section is collapsed (checked once per section by collapsing and re-expanding a
-  //    finished section; text that stays visible while the section is collapsed is never content), or
-  //  - for headers without an expanded state, it is a steps card (starts with a step title).
+  // Accept linked panels, verified collapsible siblings, or non-toggle steps cards as section content.
   const store = window.__roundtripSections || (window.__roundtripSections =
     {content: new WeakMap(), outside: new WeakSet()});
   const shows = el => {
@@ -511,11 +466,9 @@ async (args) => {
     if (!c || store.outside.has(c)) return null;
     if (!toggleable(h)) return stepsCard(c) ? c : null;
     if (expandedState(h) === 'false') return null;
-    // Once a section's following element was seen to disappear on collapse, the section owns its
-    // panel; a re-rendered panel is a new element, so any later candidate not seen outside counts.
+    // Reuse verified panel ownership unless the candidate is known to be outside the section.
     if (store.content.has(h)) return c;
-    // A running section is the latest output: what follows it is its own (streaming) content.
-    // Finished sections are verified by verifySections() before being read.
+    // Use the following panel for running sections; verify finished sections before reading.
     return doneRe.test(headTitle(h)) ? null : c;
   };
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -531,8 +484,7 @@ async (args) => {
       if (c && shows(c)) store.outside.add(c);
     }
   };
-  // For an expanded finished section, collapse it once to see whether the following element
-  // belongs to it (it disappears) or is the next interim answer (it stays), then expand it again.
+  // Collapse and reopen finished sections once to verify panel ownership.
   const verifySections = async () => {
     for (const h of heads) {
       if (h.tagName === 'SUMMARY' || expandedState(h) !== 'true' || !doneRe.test(headTitle(h)) || linkedEl(h)) continue;
@@ -553,8 +505,7 @@ async (args) => {
   };
   markOutside();
   await verifySections();
-  // Open prose subsections too: expanding the outer card does not reveal text in
-  // nested Reasoning accordions. Never expand coding panels or read their code.
+  // Expand nested prose steps, but never coding panels.
   for (const h of heads) {
     const title = headTitle(h);
     if (expandedState(h) === 'false' && h.dataset.roundtripExpanded !== title) {
@@ -579,9 +530,7 @@ async (args) => {
       catch (_) { /* retry on a later snapshot */ }
     }
   }
-  // Finished sections are collapsed again once their steps were read, as in the web UI. Copilot only
-  // shows the interim answers ("Now I'll rewrite the README...") above the "Reasoned for ..." headers
-  // while those sections are collapsed; keeping them expanded hid every interim answer.
+  // Collapse finished sections after reading so interim answers remain visible.
   const collapseAfterRead = [];
   const blocks = heads.map((h, index) => {
     const title = headTitle(h);
@@ -612,12 +561,7 @@ async (args) => {
     for (const s of steps) if (!omitRe.test(s.title)) lines.push(...s.lines);
     return {index, title, active, total: lines.length, lines: lines.slice(-tail), steps: kept};
   });
-  // Live intermediate answers, as in the web UI: the short interim answers Copilot writes before,
-  // between and after the "Reasoned for ..." sections ("Now the Python scraper changes.",
-  // "Reasoned for 5s", "Now extension.js parsing.", "Reasoned for 3s", ..., final answer).
-  // Copilot may render each interim answer as its own message element, so every assistant element
-  // of the current turn is read (not only the latest one), and the whole turn region around the
-  // reasoning headers is read as well; whichever finds interim answers at more positions is used.
+  // Collect current-turn answers from assistant messages or the enclosing turn, using the richer layout.
   const answers = [];
   try {
     const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
@@ -646,9 +590,7 @@ async (args) => {
     const breaks = new Map(), skip = new Set();
     heads.forEach((h, i) => {
       breaks.set(h.tagName === 'SUMMARY' && h.parentElement ? h.parentElement : h, i);
-      // Only verified section content is skipped (see contentEl), so a following interim answer
-      // is never mistaken for the section's content.
-      // A collapsed finished section shows no content: what is visible next to it is interim text.
+      // Skip only verified section panels; preserve adjacent interim answers.
       if (h.tagName !== 'SUMMARY' && !(expandedState(h) === 'false' && doneRe.test(headTitle(h)))) {
         const c = contentEl(h);
         if (c) skip.add(c);
@@ -715,8 +657,7 @@ async (args) => {
 """
 
 
-# Marks the messages, controls and download links already on screen before a prompt is sent, so a
-# continued chat never mistakes an earlier turn's reasoning, answer or download for the new one.
+# Mark existing output so saved-chat follow-ups read only the new response.
 MARK_PRIOR_SCRIPT = r"""
 (args) => {
   let n = 0;
@@ -760,12 +701,7 @@ def read_screen(page, sel, prompt=""):
 
 
 def run(cmd, cwd=None, capture=True):
-    # stdin must NOT be inherited. The quit listener thread keeps a blocking readline() on our
-    # stdin pipe (the VS Code extension's Cancel channel). On Windows a child process that
-    # inherits a synchronous pipe handle with a pending read hangs in its C runtime start-up
-    # (GetFileType on stdin blocks until that read completes), so `git rev-parse` never
-    # returned and runs stalled at "Checking repository and Git working tree...".
-    # GIT_TERMINAL_PROMPT=0 also prevents Git from ever waiting for interactive input.
+    # Isolate child stdin from the Cancel listener and disable interactive Git prompts.
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     return subprocess.run(cmd, cwd=cwd, check=True, text=True, env=env,
                           stdin=subprocess.DEVNULL,
@@ -826,11 +762,7 @@ def normalize_download(src: Path, dst_zip: Path):
 
 
 def backup_and_replace(root: Path, result_zip: Path, backup_dir: Path):
-    """Replace the entire worktree snapshot, preserving Git metadata.
-
-    Extract and validate before touching the repository. Back up every existing
-    non-.git entry (including untracked files), and restore on apply failure.
-    """
+    """Validate and replace non-.git entries, backing up all files and restoring on failure."""
     root = root.resolve()
     backup_dir = backup_dir.resolve()
     if backup_dir == root or root in backup_dir.parents:
@@ -907,8 +839,7 @@ def selectors_from_env():
     }
 
 
-# Hard indicators: real upload progress. Soft indicators: generic spinners/progress
-# test ids that Copilot may keep on screen (e.g. image thumbnail placeholders).
+# Strict indicators track upload progress; soft spinners may persist after completion.
 BUSY_STRICT = '[role="progressbar"]:visible, [aria-busy="true"]:visible'
 BUSY_SOFT = '[data-testid*="progress" i]:visible, [class*="spinner" i]:visible'
 THUMBNAILS = 'img[src^="blob:"]:visible, img[src^="data:"]:visible'
@@ -971,15 +902,7 @@ def _recognized(page, filename, baseline, image):
 
 def wait_for_attachment_ready(page, source_txt: Path, timeout_ms: int = 180000, require_name: bool = True,
                               baseline=None, recognize_seconds=None):
-    """Wait for the current draft's attachment to finish uploading (up to 3 min).
-
-    The attachment is recognized by a new occurrence of its file name (text or chip
-    attributes), a new attachment chip, or, for images (require_name=False), a new
-    thumbnail. Returns False if nothing is recognized within ``recognize_seconds`` so the
-    caller can retry another attach method instead of waiting indefinitely. Upload is
-    settled when progress indicators are no higher than before the attachment was added;
-    persistent generic spinners are ignored after a grace period.
-    """
+    """Recognize a new attachment and await settled progress; return False on recognition timeout."""
     filename = source_txt.name
     baseline = baseline or {"strict": 0, "soft": 0, "thumbs": 0, "chips": 0, "names": 0}
     started = time.monotonic()
@@ -1085,12 +1008,7 @@ def attach_methods(page, sel, path: Path):
 
 
 def attach_file(page, sel, path: Path, require_name: bool = True):
-    """Attach a file and wait until Copilot recognizes and finishes uploading it.
-
-    Tries suitable file inputs (matching ``accept``) and then the attach button's file
-    chooser; each attempt has a bounded recognition window so the run never stays
-    stuck on "attaching" when an input silently rejects the file.
-    """
+    """Try suitable file inputs, then the file chooser, with bounded upload recognition."""
     tried = 0
     for method in attach_methods(page, sel, path):
         baseline = attachment_snapshot(page, path.name)
@@ -1283,9 +1201,7 @@ def enable_temporary_chat(page, sel, timeout_seconds=30):
     raise SystemExit("Temporary chat could not be enabled (Copilot did not show the temporary chat state).")
 
 
-# Copilot often shows a generated file only as a link or chip with its name ("repo-fixed.zip"),
-# without a download attribute, "download" in the href or a "Download" button. Such links are
-# also accepted when their text or href names a .zip file (never the uploaded .zip.txt archive).
+# Accept descriptive ZIP links and file chips, excluding uploaded .zip.txt archives.
 ZIP_LINK_SELECTOR = ('a[href*=".zip" i], a:has-text(".zip"), [role="link"]:has-text(".zip"), '
                      'button:has-text(".zip"), a:has-text("ZIP"), [role="link"]:has-text("ZIP"), '
                      'button:has-text("ZIP")')
@@ -1467,8 +1383,7 @@ def cmd_fix(args):
     work_parent = Path(args.work_dir).expanduser().resolve() if args.work_dir else None
     if work_parent is not None:
         work_parent.mkdir(parents=True, exist_ok=True)
-    # All source archives, downloads, diagnostics and rollback copies are temporary.
-    # The directory is removed on success, failure, or cancellation via normal unwinding.
+    # Delete temporary archives, diagnostics and rollback copies when the run exits.
     emit_status("preparing", "Preparing temporary workspace...")
     with tempfile.TemporaryDirectory(prefix="copilot-roundtrip-", dir=work_parent) as temporary_work:
         return run_roundtrip(args, root, profile, Path(temporary_work), sync_playwright, PlaywrightTimeout)
@@ -1508,8 +1423,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 emit_status("browser", "Opening Copilot Chat...")
                 page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
                 wait_for_ui(page)
-            # Temporary chat must be enabled first: switching to it resets the model selection.
-            # A continued chat is a saved chat, so Temporary chat is never enabled for it.
+            # Enable Temporary chat before model selection; saved follow-ups never enable it.
             if args.temporary_chat and not continuing:
                 emit_status("temporary", "Enabling Temporary chat...")
                 enable_temporary_chat(page, sel)
@@ -1549,16 +1463,14 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 reported_url = conversation_url(page.url, args.url) or chat_url
                 emit_chat(reported_url)
             emit_status("waiting", "Waiting for Copilot to generate a downloadable repository...")
-            # The timeout is an inactivity timeout: it only runs while nothing new appears on screen
-            # (reasoning or response text). Any new output restarts it.
+            # Reset the inactivity timeout whenever reasoning or response output changes.
             idle_limit = args.timeout
             started = time.monotonic()
             last_activity = started
             last_signature = None
             last_live = None
             live_blocks, live_answers = [], []
-            # Download attempts per link: (count, last attempt time). A link can be rendered before
-            # its file is ready, so a failed attempt is retried instead of being skipped for good.
+            # Track download attempts as (count, timestamp) and retry links whose files are not ready.
             attempts = {}
             upload_names = [source_txt.name] + [a.name for a in attachments]
             last_update = started
@@ -1579,8 +1491,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                     if count >= DOWNLOAD_MAX_ATTEMPTS or (count and now - last < DOWNLOAD_RETRY_SECONDS):
                         continue
                     attempts[key] = (count + 1, now)
-                    # A link's target is fetched directly first (no navigation away from the chat);
-                    # otherwise (JS-handled links and buttons) the link is clicked.
+                    # Fetch targets without navigation; click JavaScript-handled links as a fallback.
                     downloaded = fetch_download(ctx, page, href, work) if href else None
                     if downloaded is None:
                         try:
@@ -1591,8 +1502,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                             downloaded = None
                     if downloaded is not None:
                         break
-                # A downloadable result is independent of reasoning/prose availability.
-                # Check it before expanding any optional reasoning panels.
+                # Check downloads before optional reasoning capture.
                 if downloaded is not None:
                     break
                 signature, blocks, answers = read_screen(page, sel, prompt)
@@ -1622,11 +1532,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 (work / "copilot-timeout.html").write_text(page.content(), encoding="utf-8")
                 ctx.close()
                 raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s. Temporary diagnostics were removed with the run directory")
-            # Final snapshot of the finished response. The download link can appear before Copilot
-            # has finished writing its final answer, so wait for the response to end first.
-            # Read twice: the first read may collapse sections it just finished reading, the second
-            # sees the web UI layout with the interim answers between the collapsed sections. The
-            # final layout replaces the streamed answers so the result matches the web UI.
+            # Wait for response completion, then read twice to capture the final collapsed-section layout.
             emit_status("waiting", "Download ready; waiting for Copilot to finish its response...")
             wait_for_response_end(page, sel)
             for attempt in range(2):
