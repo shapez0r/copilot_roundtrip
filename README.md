@@ -1,92 +1,85 @@
 # Copilot Repository Round-Trip
 
-Experimental Python/Playwright automation for submitting a local Git repository to Microsoft 365 Copilot Chat for a requested change, downloading the resulting archive, and applying it to the working tree.
+Experimental Python/Playwright automation that sends a committed Git repository snapshot to Microsoft 365 Copilot Chat, downloads a complete replacement ZIP, and applies it to the local working tree. A VS Code sidebar uses the same Python engine as the command-line tool.
 
-> **Experimental:** This relies on browser UI selectors that can change. Inspect all generated changes before committing. The script does not commit or push.
-
-## Contents
-
-- `vscode-extension/scripts/copilot_repo_roundtrip.py` — command-line tool (`login` and `fix`). This is the single canonical copy of the automation; the VS Code extension in `vscode-extension/` uses the same file (see [VS Code extension](#vs-code-extension)).
+> **Experimental:** The workflow depends on Copilot's browser UI and selectors. Review all changes before committing. It does not commit or push.
 
 ## Requirements
 
-- Python 3.9+ (the script uses modern type annotations).
-- Git installed and available on `PATH`.
+- Python 3.9+, Git, and a local Git repository with a valid `HEAD` commit.
 - A Microsoft 365 account with access to Copilot Chat.
 - Playwright for Python and its Chromium browser.
-- A local Git repository with a valid `HEAD` commit.
+- VS Code 1.85+ for the extension; Node.js and npm for packaging and JavaScript tests.
 
-## Install (Windows PowerShell)
+## Command-line setup
 
-Run these commands from the repository root. Keep the virtual environment outside the repository so it does not make the working tree dirty or get removed during replacement:
+From the repository root in Windows PowerShell, create a virtual environment **outside** the repository. This keeps the worktree clean and prevents the replacement process from removing the environment.
 
 ```powershell
 py -m venv "$env:USERPROFILE\.copilot-roundtrip-venv"
 & "$env:USERPROFILE\.copilot-roundtrip-venv\Scripts\Activate.ps1"
-python -m pip install --upgrade pip
-python -m pip install playwright
+python -m pip install --upgrade pip playwright
 python -m playwright install chromium
 ```
 
-If PowerShell blocks activation, you can run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` and retry activation. The archive does **not** include a requirements file.
+If activation is blocked, use `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` for that PowerShell session. There is no requirements file in this repository.
 
-## Sign in
+### Sign in
 
 ```powershell
 python .\vscode-extension\scripts\copilot_repo_roundtrip.py login
 ```
 
-A Chromium window opens at `https://m365.cloud.microsoft/chat/`. Sign in, navigate to a usable Copilot Chat page, then return to the terminal and press Enter. The persistent browser profile defaults to `~/.copilot-repo-browser`; **do not share or commit it**, as it can contain authentication state.
+Sign in using the visible Chromium window, navigate to a usable Copilot Chat page, and press Enter in the terminal. The persistent profile defaults to `~/.copilot-repo-browser`; it may contain authentication state and must remain private and outside version control.
 
-## Request a fix
-
-```powershell
-python .\vscode-extension\scripts\copilot_repo_roundtrip.py fix "Add a proper README.md" --repo "C:\path\to\repository"
-```
-
-To request a specific model (its label must match the visible UI):
+### Request changes
 
 ```powershell
-python .\vscode-extension\scripts\copilot_repo_roundtrip.py fix "Add a proper README.md" --repo "C:\path\to\repository" --model "GPT/GPT-6"
+python .\vscode-extension\scripts\copilot_repo_roundtrip.py fix "Update the README" --repo "C:\path\to\repository"
 ```
 
-`--model` accepts a provider/model pair such as `Claude/Opus 5.5` or `GPT/GPT-6` (the default). The slash separates provider and model; spaces, dots, and dashes in the model name are preserved. The chosen model must be available in the account's model menu; otherwise selection fails. Menu layout and model availability may change.
+The default model is `GPT/GPT-6`. Specify another available provider/model label with `--model "Claude/Opus 5.5"` (or another exact UI label). Model availability and menu structure can change.
 
-To attach additional files to the prompt (for example a screenshot, picture, or specification), pass a path to each file with `--attach` (repeatable):
+Attach context files using repeatable `--attach PATH` options. These files are uploaded with the repository snapshot but are not added to the repository.
+
+To continue a saved chat, disable Temporary chat on the initial run with `--no-temporary-chat`, then use the returned `chat_url`:
 
 ```powershell
-python .\vscode-extension\scripts\copilot_repo_roundtrip.py fix "Match the layout in the screenshot" --repo "C:\path\to\repository" --attach "C:\pictures\layout.png" --attach "C:\docs\spec.pdf"
+python .\vscode-extension\scripts\copilot_repo_roundtrip.py fix "Update the tests" --repo "C:\path\to\repository" --chat-url "https://m365.cloud.microsoft/chat/..."
 ```
 
-Attached files are uploaded after the repository archive and mentioned in the prompt as context; they are not added to the repository.
+Every request, including a follow-up, uploads a fresh archive of **committed `HEAD`**, not uncommitted changes. Commit an accepted result before the next request. A saved-chat follow-up reuses the same Copilot conversation and ignores earlier response links. If that conversation cannot be reopened, the run fails rather than starting a different one.
 
-To continue a saved (non-temporary) Copilot chat, pass the `chat_url` printed by an earlier run with `--no-temporary-chat`:
+Press **Q** to cancel a CLI run. After submission, cancellation attempts to click Copilot's **Stop** control before exiting without applying changes.
 
-```powershell
-python .\vscode-extension\scripts\copilot_repo_roundtrip.py fix "Also update the tests" --repo "C:\path\to\repository" --chat-url "https://m365.cloud.microsoft/chat/..."
-```
+### Options
 
-The follow-up is sent in that same Copilot chat. The current committed repository state is archived and attached again for every prompt, so follow-ups do not depend on files remaining in Copilot's sandbox. The follow-up prompt tells Copilot that this archive supersedes earlier ones. Commit each accepted round-trip result before sending another prompt, otherwise the next archive still contains the previous `HEAD`. Reasoning, answers and download links of earlier turns are ignored, so only the new response's ZIP is applied. If the saved chat cannot be reopened, the run fails instead of starting a different chat.
+Run `python vscode-extension/scripts/copilot_repo_roundtrip.py --help` or append `fix --help` for full usage.
 
-While a fix runs, press `Q` in the terminal to quit: once the prompt has been submitted, the script first clicks **Stop** on the Copilot response and only then closes the browser and exits (exit code 130) without changing the repository. The Stop button selector can be overridden with `COPILOT_STOP` (see [UI selector overrides](#ui-selector-overrides)).
+- `--repo PATH`: target repository (default: current directory).
+- `--model LABEL`: exact provider/model label (default: `GPT/GPT-6`).
+- `--attach PATH`: additional context file; repeat as needed.
+- `--timeout SECONDS`: inactivity timeout (default: 900); visible output or task-card changes reset it.
+- `--show-browser`: display Chromium during a fix; sign-in always uses a visible browser.
+- `--allow-dirty`: bypass the clean-tree check; the uploaded snapshot still comes from `HEAD`.
+- `--temporary-chat` / `--no-temporary-chat`: use a temporary chat (default) or a saved chat.
+- `--chat-url URL`: continue a saved chat; implies `--no-temporary-chat`.
+- `--work-dir PATH`: parent for temporary files, outside the target repository; run files are deleted on exit.
+- `--profile PATH` and `--url URL`: global browser profile and Copilot Chat URL options, placed before `login` or `fix`.
+- `--headless` and `--backup-dir`: deprecated compatibility options. The browser is hidden by default, and rollback backups are always temporary.
 
-The tool requires a clean working tree by default. `--allow-dirty` bypasses this check, but the uploaded snapshot is still made from `HEAD`, **not** from uncommitted or untracked changes.
+### Archive and safety behavior
 
-## How it works
+1. Verify the target Git worktree and, unless `--allow-dirty` is set, require it to be clean.
+2. Run `git archive --format=zip HEAD` and upload the ZIP bytes with a `.zip.txt` filename, followed by optional context attachments.
+3. Open Copilot Chat, configure Temporary chat and model selection, wait for attachment readiness, and submit the request.
+4. Wait for the response to finish before discovering a downloadable ZIP. Activity and task-card updates reset the inactivity timer.
+5. Validate that the returned archive contains files and reject unsafe paths, `.git` entries, and Unix symlinks. A byte-identical returned archive is rejected.
+6. Back up the entire worktree, including untracked files, then replace everything except `.git` with the returned repository. Restore the backup if applying the result fails.
 
-1. Confirms the target is a Git worktree and checks cleanliness unless `--allow-dirty` is set.
-2. Runs `git archive --format=zip HEAD`, saving ZIP bytes under a timestamped `.zip.txt` name (for example `repo-20261024-191212.zip.txt`) for attachment.
-3. Opens Copilot Chat, enables **Temporary chat** (unless `--no-temporary-chat`), selects the requested model, uploads the archive (followed by any `--attach` files), waits for an attachment chip and bounded progress checks (up to 180 seconds), then submits the repair request (retrying for up to 120 seconds).
-4. Lets the Copilot UI load for about 2.5 seconds after opening it (the browser is hidden by default), then uses the visible **Stop** control as the authoritative response-running signal. When a current task/plan card is visible, the tool hovers it and checks its Stop icon; only when no current task card exists does it check the page Stop control, normally on the right of the composer. The same lookup selects the control clicked by Q or the extension's red-square Stop action. While it remains visible, the tool streams activity but does not inspect result links; download discovery starts only after the control has disappeared. Visible task cards stay expanded so their title, state and plan items can be mirrored, and they are removed from the extension when the page closes or replaces them. The timeout only counts time with no new on-screen output or task-card change and restarts whenever either changes; if it expires, a screenshot and HTML diagnostics are written to the temporary run directory and removed when the run exits. They are not retained for later inspection, even with `--work-dir`. The tool expands **Show more** in visible working timelines and opens activity controls before reading them. It labels each activity block from the page structure as either part of **Working through the steps** or a standalone expandable section. Standalone section headers follow the web UI, such as "Reasoning" while running and "Reasoned for 8m 6s" when complete. Completed titled steps remain separate from expandable details. Code blocks are omitted, and code-execution steps are sent with a title but no code or command output. Intermediate answers outside structured activity are streamed separately in their visible order. These rules depend on the rendered UI, not the selected provider or model.
-   After completion, result links can open preview tabs, navigated previews, or dialogs; the tool follows their Download controls and restores the chat afterward. Download navigation errors do not discard an already-started file. Unavailable files are retried with a delay capped at 60 seconds until the inactivity timeout.
-5. Checks that the download is a ZIP with files, rejects traversal paths, `.git` entries and Unix symlinks, and refuses a byte-identical archive.
-6. Backs up all existing worktree files (including untracked files), clears the worktree except `.git`, then copies the complete extracted repository into place. On an apply failure, it restores the backup. It prints Git status, diff statistics, and the latest Copilot assistant chat response (when available) in the JSON output.
+**Important:** A returned ZIP is a **full replacement**, not a patch. Files omitted from it are deleted from the worktree, including untracked files. Files excluded from `git archive HEAD` are not uploaded. Backups, downloads, and timeout diagnostics are temporary and deleted at the end of a run, including when `--work-dir` is used. Keep an independent backup of important work.
 
-**Important:** Files omitted from the returned ZIP are deleted from the worktree; `.git` is preserved. Untracked files are also removed from the worktree (but included in the backup). Source ZIPs, downloads and rollback backups are temporary, kept outside the repository, and deleted when the run finishes (including on errors); the applied changes remain in the working tree. It may add files from the response. It does not independently verify that Copilot changed only what was requested. Review the diff and new files carefully. Files excluded by `git archive HEAD` are not sent to Copilot.
-
-## Review the result
-
-From the target repository:
+The tool reports Git status and diff statistics, but does not verify that Copilot changed only the requested files. From the target repository, review:
 
 ```powershell
 git status
@@ -94,34 +87,9 @@ git diff
 git diff --check
 ```
 
-Temporary files are deleted automatically when the run finishes; use `--work-dir` to choose their parent directory outside the target repository. This does not retain archives, diagnostics or backups after the run.
+### UI selector overrides
 
-## Command-line options
-
-```text
-python vscode-extension/scripts/copilot_repo_roundtrip.py [--profile PATH] [--url URL] login
-python vscode-extension/scripts/copilot_repo_roundtrip.py [--profile PATH] [--url URL] fix REQUEST [options]
-```
-
-For `fix`, options include:
-
-- `--repo PATH` — target Git repository (default: current directory).
-- `--model LABEL` — provider/model pair: `Claude/Opus 5.5` or `GPT/GPT-6` (default: `GPT/GPT-6`).
-- `--work-dir PATH` — optional parent folder for temporary archives, downloads and diagnostics (deleted automatically).
-- `--backup-dir PATH` — deprecated; rollback copies are temporary and deleted automatically.
-- `--timeout SECONDS` — seconds with no new on-screen Copilot output or long-running task-card change before giving up (default: `900`).
-- `--show-browser` — show Chromium during the fix (by default it runs hidden and requires an existing signed-in profile).
-- `--headless` — deprecated; the browser is already hidden by default.
-- `--allow-dirty` — allow a dirty worktree (use with caution).
-- `--temporary-chat` / `--no-temporary-chat` — enable (default) or skip Copilot **Temporary chat**. Temporary chat is enabled before the model is selected, because enabling it resets the model selection.
-- `--attach PATH` — additional file or picture to attach to the prompt; repeat for several files.
-- `--chat-url URL` — continue the saved Copilot chat at this URL (the `chat_url` of a previous run); implies `--no-temporary-chat`. Runs with Temporary chat off report the chat URL as `ROUNDTRIP_CHAT:` JSON lines on stderr and as `chat_url` in the final JSON.
-
-Use `python vscode-extension/scripts/copilot_repo_roundtrip.py --help` and `python vscode-extension/scripts/copilot_repo_roundtrip.py fix --help` for the CLI help.
-
-## UI selector overrides
-
-If Copilot's interface changes, you can override its Playwright selectors via environment variables:
+The following environment variables override Playwright selectors when Copilot's UI changes:
 
 ```powershell
 $env:COPILOT_COMPOSER='textarea'
@@ -130,13 +98,50 @@ $env:COPILOT_SEND='button[aria-label*="Send" i]'
 $env:COPILOT_DOWNLOAD='a[download]'
 $env:COPILOT_MODEL_BUTTON='button[aria-label*="model" i]'
 $env:COPILOT_TEMPORARY_CHAT='button[aria-label*="temporary" i]'
-$env:COPILOT_REASONING='button[aria-expanded][aria-label*="reason" i]'  # plain CSS selector for reasoning headers
+$env:COPILOT_REASONING='button[aria-expanded][aria-label*="reason" i]'
 $env:COPILOT_STOP='button[aria-label*="Stop" i]'
 ```
 
-`COPILOT_STOP` controls both cancellation and completion detection. Its default selector recognizes Stop controls by accessible label, title, test ID, visible text, or nested icon metadata so controls in either the composer or task card are detected. Current task cards take priority and are hovered before checking their Stop icon; the composer/page fallback is used only when no current task card is visible. Transparent controls and earlier-turn task cards are ignored.
+`COPILOT_STOP` is used for both completion detection and cancellation. Current task cards take priority over the composer Stop control. Upload readiness depends on attachment indicators and bounded progress checks, not the informational OneDrive notice.
 
-The informational OneDrive upload notice is **not** treated as an upload-progress indicator. Upload readiness is determined from the attachment chip and actual progress elements, with a bounded wait.
+## VS Code extension
+
+The extension in `vscode-extension/` provides a sidebar for repository-wide changes, not inline code completions. Its single automation engine is `scripts/copilot_repo_roundtrip.py`.
+
+### Install and use
+
+1. From `vscode-extension/`, run `npm run package` (requires access to `@vscode/vsce`) and install the generated `.vsix` with **Extensions: Install from VSIX...**. For development, launch an Extension Development Host using `code --extensionDevelopmentPath="<absolute path to vscode-extension>" "<absolute path to target repository>"`. No F5 launch configuration is included.
+2. Open a local Git repository in VS Code and select **Repo Round-Trip** in the activity bar. The active editor's workspace folder is used, or the first local workspace folder if none is active.
+3. Open **Chat options** beside Attach and Model, choose **Sign in**, authenticate in Chromium, then click **Finish sign in**. The extension installs Playwright and Chromium into a private Python environment in VS Code global storage on first use; initial setup requires internet access.
+4. Choose or type an available provider/model label (presets include `GPT/GPT-6`, `GPT/GPT-6.1 Sol`, and `Claude/Opus 5.5`). Enter a request and click **Modify repository**, or press Enter. Shift+Enter inserts a newline. The operation begins without a confirmation prompt.
+5. Inspect the **Changes** summary and the actual diff in VS Code Source Control. Diagnostic output is available under **Output → Repo Round-Trip**.
+
+Use **Attach files...**, paste images, or drop files into the prompt area (hold Shift when dropping into the VS Code webview). Attachments are temporary context, not repository files. The sidebar streams visible response text, task plans, and activity; code-execution details are omitted. The active task card's Stop action and the composer Cancel control request cancellation before terminating the process if necessary.
+
+### Chat history
+
+- **New chat** starts a separate conversation. **History** lists saved chats for the current workspace and allows reopening or removing a history entry; removing it does not delete the Copilot conversation.
+- Temporary chat is on by default and is not saved. Turn it off before the first prompt to save the chat across VS Code restarts. This choice is fixed for that chat.
+- Saved follow-ups reopen the recorded Copilot chat URL and upload the current committed snapshot again. If the first run never recorded a URL, the next prompt starts a new Copilot conversation for that history entry.
+- Commit accepted changes before follow-ups. `allowDirty` does not include uncommitted changes in the uploaded snapshot.
+
+### Settings
+
+All settings are under **Settings → Repo Round-Trip** with the `copilotRoundtrip.` prefix:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `pythonPath` | `python` | Python executable used to create the managed environment. |
+| `model` | `GPT/GPT-6` | Initial editable model label. |
+| `timeout` | `900` | Seconds without new Copilot output or task-card changes. |
+| `showBrowser` | `false` | Initial browser visibility for modification runs. |
+| `temporaryChat` | `true` | Initial Temporary chat choice for new chats. |
+| `allowDirty` | `false` | Allow dirty worktrees while still archiving `HEAD`. |
+| `profilePath` | empty | Browser profile path; defaults to `~/.copilot-repo-browser`. |
+| `workDir` | empty | Parent directory for automatically deleted run files. |
+| `backupDir` | empty | Deprecated compatibility setting; backups remain temporary. |
+
+Sidebar model and checkbox choices apply to runs without changing stored VS Code settings. The extension requires a local extension host, Python, and Chromium; remote/web-only hosts are unsupported.
 
 ## Tests
 
@@ -147,82 +152,11 @@ npm test
 python -m unittest discover -s test -p "test_*.py"
 ```
 
-The Node.js tests require Node.js and npm. Python browser tests require Playwright and Chromium; they are skipped when those dependencies are unavailable. `ROUNDTRIP_TEST_CHROMIUM` can point to an existing Chromium executable for the browser tests. These regression tests do not verify a live Copilot sign-in or round-trip.
+Python browser tests require Playwright and Chromium and are skipped if unavailable. Set `ROUNDTRIP_TEST_CHROMIUM` to an existing Chromium executable if needed. These regression tests do **not** exercise a live Copilot sign-in or repository round-trip.
 
-## Security notes
+## Security and maintenance
 
-- Only use this with repositories whose contents are approved for upload to your organization's Copilot environment.
-- Keep the browser profile, downloaded archives and backup directories private.
-- Validate the resulting source changes and run your project's tests before committing.
-- Browser automation and the download flow are dependent on the current Copilot UI and are not guaranteed to work across updates.
-
----
-
-## VS Code extension
-
-A sidebar prompt-and-response interface for the repository-wide `copilot_repo_roundtrip.py` workflow. This is **not** an inline coding assistant: each prompt sends a committed Git snapshot to Microsoft 365 Copilot Chat and applies the returned full ZIP to the current workspace repository.
-
-The command-line workflow and archive replacement details are documented above.
-
-## Install / run
-
-1. Install VS Code 1.85.0 or later, Python 3.9+ and Git. Install Node.js and npm to package the extension or run its Node.js tests. On first **Sign in** or **Modify repository**, the extension automatically creates a private Python virtual environment in VS Code extension global storage, installs Playwright and its Chromium browser, and reuses that environment for subsequent runs. Internet access is required for the first setup.
-2. From `vscode-extension/`, run `npm run package` (requires npm access to download `@vscode/vsce`) and install the resulting `.vsix` using **Extensions: Install from VSIX...**. For development, run `code --extensionDevelopmentPath="<absolute path to vscode-extension>" "<absolute path to target repository>"` to open an Extension Development Host. This repository does not include an F5 launch configuration.
-3. In VS Code (or the Extension Development Host), open your target Git repository folder (the run always uses the current workspace repository: the folder of the active editor, otherwise the first workspace folder). Select the **Repo Round-Trip** activity-bar icon.
-4. Open **Chat options** beside Attach and Model, click **Sign in**, complete authentication in the visible browser, then click **Finish sign in**.
-5. Enter the exact provider/model pair (for example `Claude/Opus 5.5` or `GPT/GPT-6`) in the **Model** field: its dropdown offers `GPT/GPT-6`, `GPT/GPT-6.1 Sol` and `Claude/Opus 5.5`, and the field stays editable so any other provider/model can be typed. The slash separates provider from the exact UI model name. Type a prompt and click **Modify repository** (the run starts immediately, without a confirmation prompt). The response remains in the live chat stream without a duplicate **Copilot response** section. Saved-chat responses and responses without streamed text appear directly in the conversation with a Copy action. During a run, the sidebar mirrors Copilot's rounded task card, expandable plan, and **Working through the steps** timeline. Hover the active task card to reveal its Stop control. A stopped task becomes a compact card with a circled ×, **Task stopped** status, no plan, and a cancellation response below it. The **Changes** section shows the result with color-coded file paths (green/red/yellow for added/deleted/modified) plus colored status squares and a compact bar of at most five green/red squares per file, regardless of change size; open **Source Control** and select a changed file there to inspect its diff (the sidebar result rows are not clickable). Diagnostic logs are available in **Output → Repo Round-Trip**.
-6. To attach additional files to the prompt, paste an image (Ctrl+V / Cmd+V) into the prompt box, drag and drop images or files onto the prompt area (VS Code requires holding **Shift** while dropping into a webview; files can be dropped from the operating system or the VS Code Explorer), or click **Attach files...** to pick files. Attachments appear as removable chips (images with a thumbnail) and are uploaded alongside the repository archive as context; they are not added to the repository. Pasted or dropped file contents are written to a temporary folder that is deleted after the run.
-
-## Chat history
-
-The sidebar keeps a chat history like a regular AI coding-assistant extension. The chat panel's **New chat** (+) button starts a conversation, and its **History** button lists the saved chats of the current workspace (newest first, with time, number of prompts and model). Click a chat to reopen it, or **×** to remove it from the history (the Copilot conversation itself is not deleted).
-
-- A chat whose first prompt is run with **Temporary chat** off is saved in the history (per workspace, kept across VS Code restarts). With Temporary chat on, the conversation is not saved and every prompt runs in a new Copilot temporary chat.
-- The Temporary chat choice is fixed after a chat's first prompt; use **New chat** to change it.
-- Every subsequent prompt of a saved chat is executed in the same Copilot chat in the web UI: the extension records the Copilot chat URL after the first prompt and reopens it for each follow-up.
-- Each prompt attaches the current committed repository state again, so follow-ups do not depend on files remaining in Copilot's sandbox. Follow-ups tell Copilot that this archive replaces earlier ones. Commit accepted changes before the next prompt; otherwise a clean-tree check fails, or `allowDirty` sends the old `HEAD` rather than those changes.
-- If the Copilot chat link could not be recorded (for example when the first run failed before Copilot opened the conversation), the next prompt starts a new Copilot chat for that history entry.
-
-## Settings
-
-All settings use the `copilotRoundtrip.` prefix and appear under **Settings > Repo Round-Trip**:
-
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `pythonPath` | `python` | Python executable used to create the managed virtual environment. |
-| `model` | `GPT/GPT-6` | Initial provider/model value in the editable sidebar field. |
-| `timeout` | `900` | Inactivity timeout in seconds; new on-screen output or a task-card change restarts it. |
-| `showBrowser` | `false` | Initial state of **Show browser** for modification runs; sign-in is always visible. |
-| `temporaryChat` | `true` | Initial state of **Temporary chat** for new chats. |
-| `allowDirty` | `false` | Bypass the clean-tree check; uploads still use `HEAD` only. |
-| `profilePath` | Empty | Browser profile path; empty uses `~/.copilot-repo-browser`. |
-| `workDir` | Empty | Parent directory for temporary run files; files are deleted when the run exits. |
-| `backupDir` | Empty | Legacy setting passed as deprecated `--backup-dir`; it does not retain backups or change their location. |
-
-On Windows, set `pythonPath` to a Python executable if `python` is not on `PATH`. Keep the profile and temporary work directory outside the target repository. There is no `copilotRoundtrip.headless` setting; use `showBrowser` instead. Sidebar model and checkbox changes apply to runs but do not update the stored VS Code settings.
-
-## Important limitations
-
-- The bundled Python script is the single canonical automation engine. Browser UI changes may break the flow.
-- A clean Git worktree with a valid HEAD is required by default. `allowDirty` does **not** upload uncommitted changes; the archive comes from HEAD.
-- The script **replaces the entire worktree** (excluding `.git`) with the downloaded ZIP after backing up files. Files missing from the ZIP are removed, including untracked files. Inspect the Git diff and test before committing.
-- The browser sign-in profile contains sensitive authentication state; do not commit or share it.
-- No API keys, model API, inline completions, or code assistance features are used. This requires a Microsoft 365 Copilot Chat account and its browser UI.
-- The task-card Stop control and the composer Cancel control first click **Stop** on the running Copilot response, then quit the script (the same behavior as pressing `Q` in a terminal run); the process is only killed if it has not exited after 30 seconds. Cancellation cannot undo a replacement already in progress. Rollback backups are temporary and deleted when the run exits, so keep an independent backup of any work you need to retain.
-- Press **Enter** in the prompt box to run it, exactly like clicking **Modify repository**; **Shift+Enter** inserts a new line.
-- The extension requires a local VS Code extension host, Python, and Chromium. Remote/web-only hosts are not supported.
-
-## Execution activity
-
-- **Chat options**, beside Attach and Model, contains **Show browser** (off by default), **Temporary chat** (on by default), and sign-in controls. Temporary chat is enabled before model selection.
-- The browser waits about 2.5 seconds after navigation. Uploads can take up to 180 seconds to settle; submission retries for up to 120 seconds.
-- `ROUNDTRIP_STATUS:` JSON lines on stderr update the sidebar's activity state. When Copilot exposes a task card, the payload includes its title, state and visible plan-item states so the sidebar can display the matching rounded card with completed, active and pending indicators and a Stop action. If the page removes or folds away the task card, the sidebar removes it too. Stopping clears the plan and activity sections and marks the card as **Task stopped**. Late activity updates are ignored while cancellation finishes. Stdout contains the final JSON result.
-- `ROUNDTRIP_REASONING:` JSON lines stream structured activity and interim answers after expanding the Copilot UI's **Show more** and visible detail controls. An explicit **Working through the steps** box is mirrored as a rolling, collapsed-by-default timeline whose summary advances through completed steps. Without that box, each outer activity section is rendered directly with its current UI title and expandable subsections such as **Reasoning** or **Creating a file**; when the page changes the outer title to **Reasoned for ...**, the sidebar updates the title and folds the section. Active indicators smoothly assemble a small brick wall from the bottom up, hold the completed build, then fade before repeating; reduced motion shows a static completed wall. Detail sections show the latest 10 visible lines. Code-execution details always display `Coding and execution details are not needed here.` instead of code or command output.
-- Interim answers outside task, working, or activity containers remain fully visible in their on-screen order and remain outside those containers in the sidebar. Current-turn response fragments are collected across assistant-message containers, including introductory prose before coding activity; enclosing turn text is used when it contains more visible answer text. Hidden page text and text already represented by a task card are excluded. Parsing and rendering use the current page structure uniformly for every model.
-- Git subprocesses use null stdin and `GIT_TERMINAL_PROMPT=0`; script stdin is reserved for Cancel/Q.
-
-## Repository maintenance instructions
-
-`AGENTS.md` defines repository-wide editing and validation rules. Initial and follow-up round-trip prompts request that the model follow `AGENTS.md` and `.github/copilot-instructions.md` when present, then review README content and comments after changes.
-
-After every modification, keep README files logically correct and aligned with the repository state. Keep comments concise, focused on current behavior, and free of historical references. Preserve required license notices and tool directives. Review the resulting diff and run the commands in [Tests](#tests); model instructions are not an enforcement mechanism.
+- Upload only repositories approved for your organization's Copilot environment. Keep browser profiles and temporary archives private.
+- Review the resulting diff and test the target project before committing. Browser UI changes can interrupt automation.
+- Follow `AGENTS.md` and `.github/copilot-instructions.md` when present. Keep README files accurate and comments concise, focused on current behavior, and free of historical narration; preserve license notices and tool directives.
+- The Python script remains the sole automation engine for both CLI and extension. Repository instructions included in prompts are guidance, not an enforcement mechanism.
