@@ -41,7 +41,10 @@ class CompletionTests(unittest.TestCase):
 
     def test_task_status_message_describes_visible_plan(self):
         tasks = [{'title': 'Add browser games', 'state': 'In progress', 'active': True,
-                  'steps': ['Extract repository', 'Package repository']}]
+                  'steps': [
+                      {'title': 'Extract repository', 'state': 'completed'},
+                      {'title': 'Package repository', 'state': 'active'},
+                  ]}]
         self.assertEqual(rt.task_status_message(tasks),
                          'Copilot task "Add browser games" is in progress; 2 plan items visible.')
         self.assertEqual(rt.task_status_message([]), '')
@@ -205,8 +208,8 @@ class BrowserTests(unittest.TestCase):
         self.page.set_content('''<main><article data-message-author-role="assistant">
           <details id="task"><summary><span>Add Beer and Dinosaur Browser Games</span>
             <span>In progress</span></summary><ol>
-            <li>Extract and inspect the repository and its instructions</li>
-            <li>Review documentation and comments, then test and verify the repository</li>
+            <li aria-label="Completed">Extract and inspect the repository and its instructions</li>
+            <li aria-current="step">Review documentation and comments, then test and verify the repository</li>
           </ol></details></article></main>''')
         tasks = rt.read_task_cards(self.page)
         self.assertTrue(self.page.locator('#task').evaluate('e => e.open'))
@@ -215,8 +218,8 @@ class BrowserTests(unittest.TestCase):
             'state': 'In progress',
             'active': True,
             'steps': [
-                'Extract and inspect the repository and its instructions',
-                'Review documentation and comments, then test and verify the repository',
+                {'title': 'Extract and inspect the repository and its instructions', 'state': 'completed'},
+                {'title': 'Review documentation and comments, then test and verify the repository', 'state': 'active'},
             ],
         }])
 
@@ -225,6 +228,19 @@ class BrowserTests(unittest.TestCase):
           <details open><summary>Old task <span>Completed</span></summary><p>Old step</p></details>
           </article></main>''')
         self.assertEqual(rt.read_task_cards(self.page), [])
+
+    def test_task_plan_is_not_flattened_into_live_answer_text(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <p>Created the implementation plan.</p>
+          <details open><summary><span>Create Two Browser Games</span><span>In progress</span></summary>
+            <ol><li aria-label="Completed">Inspect repository</li><li aria-current="step">Build games</li></ol>
+          </details></article></main>''')
+        self.assertEqual(len(rt.read_task_cards(self.page)), 1)
+        _, _, answers = rt.read_screen(self.page, self.sel)
+        text = '\n'.join(item['text'] for item in answers)
+        self.assertIn('Created the implementation plan.', text)
+        self.assertNotIn('Inspect repository', text)
+        self.assertNotIn('Build games', text)
 
 
 if __name__ == '__main__':

@@ -70,31 +70,50 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .message-copy:hover{background:var(--vscode-button-secondaryHoverBackground,var(--vscode-button-hoverBackground))}
 .message-copy:focus-visible{outline:2px solid var(--vscode-focusBorder)}
 
-/* Collapsible reasoning headers preview active steps and reveal step cards. */
+/* Copilot-style task plan and working-step timeline. */
 .reasoning{margin-top:8px}
 .reasoning[hidden]{display:none}
-.reasoning-blocks{display:flex;flex-direction:column;gap:8px}
-.rt-section{display:flex;flex-direction:column;gap:4px;min-width:0}
-.rt-head{display:inline-flex;align-items:center;gap:6px;align-self:flex-start;max-width:100%;padding:2px 4px;margin-left:-4px;background:transparent;color:var(--vscode-foreground);font:inherit;font-size:13px;font-weight:normal;border-radius:4px;text-align:left}
-.rt-head:hover{background:var(--vscode-list-hoverBackground)}
-.rt-head:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
-.rt-icon{width:12px;height:12px}
-.rt-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rt-chevron{flex:0 0 auto;display:inline-block;font-size:15px;line-height:1;opacity:.8;transition:transform .15s}
-.rt-head[aria-expanded="true"] .rt-chevron{transform:rotate(90deg)}
-.rt-preview{margin:0 0 2px 22px;max-height:15em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.5;color:var(--vscode-descriptionForeground);user-select:text;-webkit-user-select:text}
-.rt-preview[hidden]{display:none}
-.rt-steps{display:flex;flex-direction:column;gap:8px;margin:2px 0 4px;padding:10px 12px;border:1px solid var(--vscode-panel-border);border-radius:8px;background:var(--vscode-editor-background,transparent);box-shadow:0 1px 4px var(--vscode-widget-shadow,rgba(0,0,0,.12))}
-.rt-steps[hidden]{display:none}
-.rt-step{display:flex;flex-direction:column;gap:3px;min-width:0}
-.rt-step-head{display:flex;align-items:center;gap:7px;min-width:0}
-.rt-step-icon{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1px solid currentColor;border-radius:50%;font-size:8px;line-height:1;opacity:.8}
-.rt-step-icon.spinner{border-width:2px;border-color:var(--vscode-progressBar-background,var(--vscode-focusBorder));border-right-color:transparent;opacity:1}
-.rt-step-title{font-size:11px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rt-step-text{margin-left:20px;max-height:15em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.5;user-select:text;-webkit-user-select:text}
-.rt-step-text[hidden]{display:none}
+.reasoning-blocks{display:flex;flex-direction:column;gap:14px}
+.task-card{margin:2px 0 4px;border:1px solid var(--vscode-panel-border);border-radius:12px;background:var(--vscode-editor-background,transparent);overflow:hidden}
+.task-head{display:grid;grid-template-columns:18px minmax(0,1fr) 16px;align-items:start;gap:10px;width:100%;padding:14px 14px 10px;background:transparent;color:var(--vscode-foreground);text-align:left;border-radius:0}
+.task-head:hover{background:var(--vscode-list-hoverBackground)}
+.task-heading{display:flex;flex-direction:column;gap:3px;min-width:0}
+.task-title{font-weight:700;line-height:1.35;overflow-wrap:anywhere}
+.task-status{font-size:11px;color:var(--vscode-descriptionForeground);font-weight:400}
+.task-chevron,.work-chevron,.thought-chevron{display:inline-block;line-height:1;opacity:.75;transition:transform .15s}
+.task-head[aria-expanded="false"] .task-chevron,.work-head[aria-expanded="false"] .work-chevron,.thought-head[aria-expanded="false"] .thought-chevron{transform:rotate(-90deg)}
+.task-state,.task-row-state{display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--vscode-descriptionForeground);border-radius:50%;color:var(--vscode-descriptionForeground);font-size:9px;line-height:1}
+.task-state{width:15px;height:15px;margin-top:2px}.task-row-state{width:15px;height:15px}
+.task-state.active,.task-row-state.active{border-width:2px;border-color:var(--vscode-progressBar-background,var(--vscode-focusBorder));border-right-color:transparent;animation:activity-spin .8s linear infinite}
+.task-state.completed,.task-row-state.completed{border-color:var(--vscode-descriptionForeground)}
+.task-state.failed,.task-row-state.failed{border-color:var(--vscode-errorForeground);color:var(--vscode-errorForeground)}
+.task-plan{display:flex;flex-direction:column;gap:12px;padding:8px 14px 16px 22px}
+.task-plan[hidden]{display:none}
+.task-row{display:grid;grid-template-columns:15px minmax(0,1fr);align-items:start;gap:10px;color:var(--vscode-descriptionForeground);line-height:1.4}
+.task-row-title{min-width:0;overflow-wrap:anywhere}
+.task-row[data-state="active"] .task-row-title{color:var(--vscode-foreground)}
+.work-section{display:flex;flex-direction:column;min-width:0}
+.work-head{display:inline-grid;grid-template-columns:17px minmax(0,auto) 14px;align-items:center;gap:8px;align-self:flex-start;max-width:100%;padding:3px 5px;margin-left:-5px;background:transparent;color:var(--vscode-foreground);font-weight:500;text-align:left}
+.work-head:hover,.thought-head:hover{background:var(--vscode-list-hoverBackground)}
+.work-icon{position:relative;width:15px;height:15px}.work-icon::before,.work-icon::after{content:'';position:absolute;width:8px;height:11px;border-radius:2px;background:currentColor;transform:rotate(8deg)}.work-icon::after{left:6px;top:2px;opacity:.55;transform:rotate(-8deg)}
+.work-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work-timeline{display:flex;flex-direction:column;margin:10px 0 0 7px;padding-left:20px}
+.work-timeline[hidden]{display:none}
+.work-step{position:relative;padding:0 0 14px 0;min-width:0}
+.work-step:not(:last-child)::before{content:'';position:absolute;left:-14px;top:15px;bottom:-1px;width:1px;background:var(--vscode-panel-border)}
+.work-step-top{display:grid;grid-template-columns:15px minmax(0,1fr);align-items:start;gap:9px;margin-left:-21px;min-width:0}
+.work-step-state{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;margin-top:1px;border:0;border-radius:50%;background:var(--vscode-editor-background,var(--vscode-sideBar-background));color:var(--vscode-descriptionForeground);font-size:12px;line-height:1;z-index:1}
+.work-step-state.spinner{border:2px solid var(--vscode-progressBar-background,var(--vscode-focusBorder));border-right-color:transparent;background:transparent}
+.work-step-title{min-width:0;font-weight:600;line-height:1.4;overflow-wrap:anywhere}
+.thought{margin:7px 0 0 3px;min-width:0}
+.thought-head{display:grid;grid-template-columns:7px minmax(0,auto) 13px;align-items:center;gap:6px;max-width:100%;padding:2px 4px;background:transparent;color:var(--vscode-descriptionForeground);font-size:11px;font-weight:400;text-align:left}
+.thought-dot{width:6px;height:6px;border-radius:50%;background:var(--vscode-panel-border)}
+.thought-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thought-prose{margin:6px 0 0 17px;max-height:18em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.55;user-select:text;-webkit-user-select:text}
+.thought-prose[hidden]{display:none}
+.thought.coding .thought-prose{font-style:italic;color:var(--vscode-descriptionForeground)}
 @keyframes reasoning-pulse{50%{opacity:.3}}
-@media (prefers-reduced-motion:reduce){.rt-chevron{transition:none}}
+@media (prefers-reduced-motion:reduce){.task-chevron,.work-chevron,.thought-chevron{transition:none}.task-state.active,.task-row-state.active{animation-duration:2s}}
 /* Live intermediate answers, interleaved with the reasoning blocks in on-screen order. */
 .live-answer{padding:2px 0 2px 2px}
 .live-answer-text{margin:2px 0;max-height:15em;overflow:auto;font-family:var(--vscode-font-family);font-size:12px;line-height:1.5;user-select:text;-webkit-user-select:text;cursor:text}
@@ -122,15 +141,6 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .history-title{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .history-meta{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.7;font-size:11px}
 .history-delete{flex:0 0 auto;padding:0 8px;background:transparent;color:inherit}
-/* Empty, collapsible "Coding and executing" steps: no code is shown, only a placeholder when expanded. */
-.rt-step.collapsible .rt-step-head{cursor:pointer;align-self:flex-start;max-width:100%;border-radius:4px;padding:1px 4px 1px 0}
-.rt-step.collapsible .rt-step-head:hover{background:var(--vscode-list-hoverBackground)}
-.rt-step.collapsible .rt-step-head:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
-.rt-step-chevron{font-size:13px}
-.rt-step-chevron[hidden]{display:none}
-.rt-step-head[aria-expanded="true"] .rt-step-chevron{transform:rotate(90deg)}
-.rt-step.coding .rt-step-text{font-style:italic;color:var(--vscode-descriptionForeground)}
-
 /* Native chat layout: a quiet session list and a bottom-docked composer. */
 [hidden]{display:none!important}
 html,body{height:100%;overflow:hidden}

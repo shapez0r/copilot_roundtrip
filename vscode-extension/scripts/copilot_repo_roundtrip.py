@@ -77,9 +77,12 @@ def conversation_url(current, base):
     return current
 
 
-def emit_status(stage, message):
+def emit_status(stage, message, tasks=None):
     """Line-delimited progress on stderr; stdout remains the final JSON result."""
-    print("ROUNDTRIP_STATUS:" + json.dumps({"stage": stage, "message": message}),
+    payload = {"stage": stage, "message": message}
+    if tasks is not None:
+        payload["tasks"] = tasks
+    print("ROUNDTRIP_STATUS:" + json.dumps(payload),
           file=sys.stderr, flush=True)
 
 # Time given to the Copilot web UI to finish rendering after navigation (visible and hidden browser).
@@ -605,7 +608,8 @@ async (args) => {
         if (node.nodeType !== 1) return;
         const el = node;
         if (el !== root && breaks.has(el)) { segments.push(cur); cur = {after: breaks.get(el) + 1, text: ''}; return; }
-        if (skip.has(el) || isCode(el) || ignored.test(el.tagName.toUpperCase()) || el.getAttribute('role') === 'button' ||
+        if (skip.has(el) || el.hasAttribute('data-roundtrip-task-card') || isCode(el) ||
+            ignored.test(el.tagName.toUpperCase()) || el.getAttribute('role') === 'button' ||
             el.getAttribute('aria-hidden') === 'true') return;
         const cs = getComputedStyle(el);
         if (cs.display === 'none' || cs.visibility === 'hidden' || notShown(el, cs)) return;
@@ -667,6 +671,34 @@ async () => {
     !!el.closest('[data-roundtrip-prior-msg]');
   const linesOf = el => String(el && el.innerText || '').split(/\r?\n/).map(norm).filter(Boolean);
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const stateOf = el => {
+    const nodes = [el, ...Array.from(el.querySelectorAll('*'))];
+    const signal = nodes.map(node => [node.className && String(node.className), node.getAttribute('aria-label'),
+      node.getAttribute('title'), node.getAttribute('data-state'), node.getAttribute('data-status'),
+      node.getAttribute('data-icon-name')].filter(Boolean).join(' ')).join(' ').toLowerCase();
+    const text = norm(el.innerText);
+    if (/\b(complet(?:e|ed)|done|check(?:ed|mark)?|success)\b/.test(signal) || /^[\u2713\u2714]/.test(text)) return 'completed';
+    if (el.matches('[aria-current="step"], [aria-busy="true"]') || el.querySelector('[aria-current="step"], [aria-busy="true"]') ||
+        /\b(in[-_ ]?progress|current|active|running|loading|spinner|progress)\b/.test(signal) ||
+        nodes.some(node => typeof node.getAnimations === 'function' && node.getAnimations().some(a => a.playState === 'running'))) return 'active';
+    if (/\b(pending|not[-_ ]?started|todo|queued)\b/.test(signal)) return 'pending';
+    return 'unknown';
+  };
+  const planOf = (card, title, state, lines) => {
+    let items = Array.from(card.querySelectorAll('li')).filter(visible).map(el => ({title: norm(el.innerText), state: stateOf(el)}))
+      .filter(item => item.title);
+    if (!items.length) items = lines.map(line => norm(line.replace(title, '').replace(state, '')))
+      .filter(line => line && !stateRe.test(line) && !/^(show more|working through the steps|thought process)$/i.test(line))
+      .map(itemTitle => ({title: itemTitle, state: 'unknown'}));
+    items = items.slice(0, 20);
+    const activeIndex = items.findIndex(item => item.state === 'active');
+    const completedIndex = items.reduce((last, item, index) => item.state === 'completed' ? index : last, -1);
+    let inferredActive = activeIndex;
+    if (/^in progress$/i.test(state) && inferredActive < 0) inferredActive = Math.min(completedIndex + 1, items.length - 1);
+    return items.map((item, index) => ({title: item.title, state: item.state !== 'unknown' ? item.state :
+      /^in progress$/i.test(state) ? index < inferredActive ? 'completed' : index === inferredActive ? 'active' : 'pending' :
+      /^(completed?|done)$/i.test(state) ? 'completed' : 'pending'}));
+  };
   const statusNodes = Array.from(document.querySelectorAll('span, p, div, [role="status"]'))
     .filter(el => visible(el) && !prior(el) && stateRe.test(norm(el.textContent)) &&
       !Array.from(el.children).some(child => stateRe.test(norm(child.textContent))));
@@ -718,11 +750,8 @@ async () => {
         }
       }
     }
-    let steps = Array.from(card.querySelectorAll('li')).filter(visible).map(el => norm(el.innerText)).filter(Boolean);
-    if (!steps.length) steps = lines.map(line => norm(line.replace(title, '').replace(state, '')))
-      .filter(line => line && !stateRe.test(line) &&
-        !/^(show more|working through the steps|thought process)$/i.test(line));
-    steps = steps.slice(0, 20);
+    card.setAttribute('data-roundtrip-task-card', '1');
+    const steps = planOf(card, title, state, lines);
     tasks.push({title, state, active: /^in progress$/i.test(state), steps});
   }
   return tasks;
@@ -1632,7 +1661,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                     last_tasks = tasks
                     last_activity = now
                     if tasks:
-                        emit_status("task", task_status_message(tasks))
+                        emit_status("task", task_status_message(tasks), tasks)
                 for node, href, key in download_candidates(page, sel, upload_names):
                     if href and href in prior_keys:
                         continue
@@ -1675,7 +1704,8 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                     prefix = task_message + " " if task_message else "Still waiting for Copilot response. "
                     emit_status("task" if task_message else "waiting",
                                 f"{prefix}{int(now - started)}s elapsed; no new output for "
-                                f"{int(idle)}s of {idle_limit}s allowed.")
+                                f"{int(idle)}s of {idle_limit}s allowed.",
+                                last_tasks if task_message else None)
                     last_update = now
                 if downloaded is None:
                     pause(page, 1500)
@@ -1689,6 +1719,10 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
             # Wait for response completion, then read twice to capture the final collapsed-section layout.
             emit_status("waiting", "Download ready; waiting for Copilot to finish its response...")
             wait_for_response_end(page, sel)
+            tasks = read_task_cards(page)
+            if tasks and tasks != last_tasks:
+                last_tasks = tasks
+                emit_status("task", task_status_message(tasks), tasks)
             for attempt in range(2):
                 pause(page, 1000)
                 _, blocks, answers = read_screen(page, sel, prompt)

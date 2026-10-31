@@ -18,7 +18,14 @@ function parseStatusLine(line) {
   if (!line.startsWith(STATUS_PREFIX)) return null;
   try {
     const value = JSON.parse(line.slice(STATUS_PREFIX.length));
-    return typeof value.message === 'string' && typeof value.stage === 'string' ? value : null;
+    if (typeof value.message !== 'string' || typeof value.stage !== 'string') return null;
+    const status = {stage:value.stage,message:value.message};
+    if (Array.isArray(value.tasks)) status.tasks=value.tasks.filter(task=>task&&typeof task==='object').map(task=>({
+      title:String(task.title||'Copilot task'),state:String(task.state||'In progress'),active:task.active===true||/^in progress$/i.test(String(task.state||'')),
+      steps:(Array.isArray(task.steps)?task.steps:[]).filter(step=>step&&typeof step==='object'&&String(step.title||'').trim())
+        .map(step=>({title:String(step.title).trim(),state:/^(completed|active|pending|failed)$/i.test(String(step.state||''))?String(step.state).toLowerCase():'pending'}))
+    }));
+    return status;
   } catch (_) { return null; }
 }
 const REASONING_PREFIX = 'ROUNDTRIP_REASONING:';
@@ -235,7 +242,7 @@ async function ensureRuntime(context, cfg, output, progress) {
 
 class ChatProvider {
   constructor(context, output) {
-    this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; this.loginProc=null; this.reasoning={blocks:[],answers:[]};
+    this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; this.tasks=[]; this.loginProc=null; this.reasoning={blocks:[],answers:[]};
     // The first prompt selects a saved or temporary conversation.
     this.chats=normalizeChats(context.workspaceState.get(CHATS_KEY,[]));
     this.currentId=null; this.temporary=null;
@@ -258,8 +265,8 @@ class ChatProvider {
       started:this.history.length>0,linked:!!(chat&&chat.copilotUrl)});
   }
   resetLive() {
-    this.statusHistory=[]; this.reasoning={blocks:[],answers:[]};
-    this.post({type:'progressHistory',items:[]}); this.post({type:'reasoning',blocks:[],answers:[]});
+    this.statusHistory=[]; this.tasks=[]; this.reasoning={blocks:[],answers:[]};
+    this.post({type:'progressHistory',items:[]}); this.post({type:'tasks',items:[]}); this.post({type:'reasoning',blocks:[],answers:[]});
   }
   newChat() {
     if(this.busy) return;
@@ -319,7 +326,7 @@ class ChatProvider {
   }
   refresh() {
     this.post({type:'busy',value:this.busy});
-    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'reasoning',blocks:this.reasoning.blocks,answers:this.reasoning.answers}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'temporaryChat',value:config().temporaryChat}); this.post({type:'loginActive',value:!!this.loginProc}); this.postChats();
+    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'tasks',items:this.tasks}); this.post({type:'reasoning',blocks:this.reasoning.blocks,answers:this.reasoning.answers}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'temporaryChat',value:config().temporaryChat}); this.post({type:'loginActive',value:!!this.loginProc}); this.postChats();
   }
   async openResult(p) {
     // Only open ZIPs emitted by successful runs, never arbitrary paths from the webview.
@@ -327,11 +334,12 @@ class ChatProvider {
     if(!fs.existsSync(p)) { vscode.window.showErrorMessage('Result archive no longer exists.'); return; }
     await vscode.env.openExternal(vscode.Uri.file(p));
   }
-  updateProgress(stage, message) {
+  updateProgress(stage, message, tasks) {
     this.currentStatus = message;
     this.statusHistory.push({stage, message});
     if (this.statusHistory.length > 100) this.statusHistory.shift();
     this.post({type:'progressHistory', items:this.statusHistory});
+    if(Array.isArray(tasks)){this.tasks=tasks;this.post({type:'tasks',items:this.tasks});}
   }
   updateReasoning(live) {
     this.reasoning = {blocks: live.blocks || [], answers: live.answers || []};
@@ -397,7 +405,7 @@ class ChatProvider {
     cfg.chatUrl=chat&&chat.copilotUrl?chat.copilotUrl:'';
     const continuing=!!cfg.chatUrl;
     const script=path.join(this.context.extensionPath,'scripts','copilot_repo_roundtrip.py');
-    this.busy=true; this.cancelRequested=false; this.statusHistory=[]; this.updateReasoning({blocks:[],answers:[]}); this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
+    this.busy=true; this.cancelRequested=false; this.statusHistory=[]; this.tasks=[]; this.updateReasoning({blocks:[],answers:[]}); this.post({type:'progressHistory',items:[]}); this.post({type:'tasks',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
     const attachmentNames=(Array.isArray(attachments)?attachments:[]).filter(a=>a&&typeof a==='object').map(a=>String(a.name||(a.path?path.basename(a.path):'file')));
     const userItem={role:'user',text:prompt,attachments:attachmentNames};
     this.post({type:'message',item:userItem});
@@ -432,7 +440,7 @@ class ChatProvider {
               if(chatUrl){this.output.appendLine('Copilot chat: '+chatUrl);if(chat&&chat.copilotUrl!==chatUrl){chat.copilotUrl=chatUrl;this.saveChats();}continue;}
               stderr+=line+'\n';this.output.appendLine(line);
               const status=parseStatusLine(line);
-              if(status) this.updateProgress(status.stage,status.message);
+               if(status) this.updateProgress(status.stage,status.message,status.tasks);
               else if(line.trim()) this.updateProgress('log',line.trim());
             }
           });
