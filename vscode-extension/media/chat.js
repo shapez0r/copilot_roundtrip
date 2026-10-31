@@ -2,19 +2,20 @@
   const vscode=acquireVsCodeApi();
   const $=id=>document.getElementById(id);
   const messages=$('messages'), form=$('form'), prompt=$('prompt');
-  function add(item) {
+  function add(item, streamed=false) {
+    const showText=item.role!=='assistant' || !streamed;
     const card=document.createElement('article');card.className='message '+item.role;
-    const heading=document.createElement('strong');heading.textContent=item.role==='user'?'You':item.role==='error'?'Error':'Copilot response';
+    const heading=document.createElement('strong');heading.textContent=item.role==='user'?'You':item.role==='error'?'Error':'';
     const text=document.createElement('pre');text.textContent=item.text||'';
     if(item.role==='assistant'){
       const head=document.createElement('div');head.className='message-head';
       const copy=document.createElement('button');copy.type='button';copy.className='message-copy';copy.textContent='Copy';
       copy.setAttribute('aria-label','Copy Copilot response');
       copy.addEventListener('click',()=>{copyText(item.text||'');copy.textContent='Copied';setTimeout(()=>{copy.textContent='Copy';},1500);});
-      head.append(heading,copy);card.append(head,text);
+      head.append(copy);card.append(head,text);
     } else card.append(heading,text);
     if(Array.isArray(item.attachments)&&item.attachments.length){const att=document.createElement('div');att.className='message-attachments';att.textContent='Attached: '+item.attachments.join(', ');card.append(att);}
-    messages.append(card);
+    if(showText) messages.append(card);
     if(item.role==='assistant' && ('diffStat' in item || 'gitStatus' in item)) messages.append(renderChanges(item.diffStat),renderGitStatus(item.gitStatus));
     $('conversation').scrollTop=$('conversation').scrollHeight;
   }
@@ -270,7 +271,7 @@
   }
   window.addEventListener('message',e=>{
     const m=e.data;
-    if(m.type==='message'){setHistoryOpen(false);add(m.item);}
+    if(m.type==='message'){setHistoryOpen(false);add(m.item,lastAnswers.some(a=>typeof a.text==='string'&&a.text.trim()));}
     if(m.type==='model' && !$('model').dataset.initialized){$('model').value=m.value||'GPT/GPT-6';$('model').dataset.initialized='true';}
     if(m.type==='loginActive'){if(m.value){$('settingsPanel').hidden=false;$('settingsToggle').setAttribute('aria-expanded','true');}$('finishLogin').hidden=!m.value;$('login').disabled=m.value;activity.login=!!m.value;renderActivity();}
       if(m.type==='showBrowser' && !$('showBrowser').dataset.initialized){$('showBrowser').checked=!!m.value;$('showBrowser').dataset.initialized='true';}
@@ -279,7 +280,7 @@
       if(m.type==='chatState'){chatState=m;renderChatState();renderHistory();}
       if(m.type==='toggleHistory')setHistoryOpen($('historyPanel').hidden);
       if(m.type==='focusPrompt'&&!prompt.disabled)prompt.focus();
-      if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);setHistoryOpen(!m.items.length);}
+      if(m.type==='history'){messages.replaceChildren();m.items.forEach(item=>add(item));setHistoryOpen(!m.items.length);}
     if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning,lastAnswers);$('send').disabled=m.value;$('cancel').disabled=!m.value;$('cancel').hidden=!m.value;$('send').hidden=!!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;syncTemporary();$('newChat').disabled=m.value;renderHistory();renderAttachments();}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
