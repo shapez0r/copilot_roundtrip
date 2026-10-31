@@ -295,6 +295,20 @@ class BrowserTests(unittest.TestCase):
             ('Thought process', 'thought'),
         ])
 
+    def test_working_steps_show_more_reveals_every_step(self):
+        titles = [f'Reviewing item {chr(97 + i // 26)}{chr(97 + i % 26)}' for i in range(35)]
+        rows = ''.join(f'<div>{title}</div>' for title in titles)
+        self.page.set_content(f'''<main><article data-message-author-role="assistant">
+          <section><h2>Working through the steps</h2>
+            <details open><summary>Reasoned for 1m</summary><div>
+              <div id="older" hidden>{rows}</div>
+              <button onclick="document.querySelector('#older').hidden=false;this.remove()">Show more</button>
+            </div></details>
+          </section></article></main>''')
+        _, blocks, _ = rt.read_screen(self.page, self.sel)
+        self.assertFalse(self.page.locator('#older').get_attribute('hidden'))
+        self.assertEqual([step['title'] for step in blocks[0]['steps']], titles)
+
     def test_stop_control_in_composer_or_task_card_is_running_signal(self):
         cases = (
             '<form><button aria-label="Stop responding"><svg></svg></button></form>',

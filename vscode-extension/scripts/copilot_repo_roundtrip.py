@@ -347,9 +347,32 @@ async (args) => {
   const doneRe = /^\s*(reasoned|thought|worked)\s+for\b/i;
   // "Coding and executing" steps only hold code and its output, which are not shown (empty steps).
   const omitRe = /^(coding\b|executing code\b|running code\b)/i;
-  const lineMax = 2000, maxSteps = 30;
+  const lineMax = 2000;
   const visible = el => !!el && el.getClientRects().length > 0;
   const textOf = el => (el && (el.innerText || el.textContent) || '').trim();
+  const prior = el => el.hasAttribute('data-roundtrip-prior') ||
+    !!(el.parentElement && el.parentElement.closest('[data-roundtrip-prior-msg]'));
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const inWorkingSteps = control => {
+    for (let el = control.parentElement, depth = 0; el && depth < 12; el = el.parentElement, depth++) {
+      if (/working through the steps/i.test(textOf(el))) return true;
+      if (/^(MAIN|BODY|HTML)$/.test(el.tagName)) break;
+    }
+    return false;
+  };
+  // Reveal every row before reading the timeline; the extension provides its own collapse control.
+  const expandedMore = new WeakSet();
+  while (true) {
+    const more = Array.from(document.querySelectorAll('button, [role="button"]'))
+      .filter(el => visible(el) && !prior(el) && !expandedMore.has(el) &&
+        /^show more$/i.test(textOf(el)) && inWorkingSteps(el));
+    if (!more.length) break;
+    for (const control of more) {
+      expandedMore.add(control);
+      try { control.click(); } catch (_) { /* best effort */ }
+    }
+    await wait(150);
+  }
   // Exclude screen-reader-only text from streamed answers.
   const srOnly = (el, cs) => {
     if (cs.position !== 'absolute' && cs.position !== 'fixed') return false;
@@ -406,9 +429,6 @@ async (args) => {
   let heads = customHeads || Array.from(document.querySelectorAll('button, [role="button"], summary, [aria-expanded]'));
   const headTitle = h => textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb\u2304\u2335\u02c5\u25be\u25b8]+$/, '').trim();
   const chrome = 'form, nav, header, footer, [role="toolbar"], [role="menu"], [role="menubar"], [role="dialog"], [role="tablist"]';
-  // Exclude marked prior-turn elements from the current response.
-  const prior = el => el.hasAttribute('data-roundtrip-prior') ||
-    !!(el.parentElement && el.parentElement.closest('[data-roundtrip-prior-msg]'));
   heads = heads.filter(h => {
     const t = textOf(h);
     if (prior(h)) return false;
@@ -495,7 +515,6 @@ async (args) => {
     // Use the following panel for running sections; verify finished sections before reading.
     return doneRe.test(headTitle(h)) ? null : c;
   };
-  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const waitFor = async (test, ms) => {
     for (let t = 0; t < ms; t += 100) { if (test()) return true; await wait(100); }
     return test();
@@ -583,7 +602,7 @@ async (args) => {
       if (omitRe.test(s.title)) return {title: s.title, kind: 'coding', total: 0, lines: []};
       const kind = titleRe.test(s.title) || s.lines.length ? 'thought' : 'completed';
       return {title: s.title, kind, total: s.lines.length, lines: s.lines.slice(-tail)};
-    }).slice(-maxSteps);
+    });
     const lines = [];
     for (const s of steps) if (!omitRe.test(s.title)) lines.push(...s.lines);
     return {index, title, active, total: lines.length, lines: lines.slice(-tail), steps: kept};
