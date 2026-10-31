@@ -150,6 +150,8 @@ def merge_live(prev_blocks, prev_answers, blocks, answers, final=False):
     # Blocks that temporarily vanished from the screen are kept as well.
     for old in prev_blocks[len(merged_blocks):]:
         merged_blocks.append(dict(old, active=False))
+    if final:
+        merged_blocks = [dict(block, active=False) for block in merged_blocks]
     texts = {}
     for answer in prev_answers or []:
         texts[answer["after"]] = answer["text"]
@@ -355,8 +357,10 @@ async (args) => {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const inWorkingSteps = control => {
     for (let el = control.parentElement, depth = 0; el && depth < 12; el = el.parentElement, depth++) {
-      if (/working through the steps/i.test(textOf(el))) return true;
       if (/^(MAIN|BODY|HTML)$/.test(el.tagName)) break;
+      const labels = [el, ...el.querySelectorAll('h1, h2, h3, button, summary, span, div')];
+      if (labels.some(label => visible(label) && !prior(label) &&
+          /^working through the steps(?:\s*[:：]|$)/i.test(textOf(label)))) return true;
     }
     return false;
   };
@@ -435,11 +439,11 @@ async (args) => {
     if (!visible(h) || !t || t.length > 120) return false;
     if (customHeads) return true;
     if (titleRe.test(t)) return true;
-    // Step-name headers ("Creating file") must be expandable and outside the page chrome.
+    // Standalone activity controls are not a working timeline.
     const expandable = h.tagName === 'SUMMARY' || h.hasAttribute('aria-expanded') || !!h.querySelector('[aria-expanded]');
     let inChrome = false;
     try { inChrome = !!h.closest(chrome); } catch (_) { inChrome = false; }
-    return expandable && !inChrome && stepRe.test(headTitle(h));
+    return expandable && !inChrome && inWorkingSteps(h) && stepRe.test(headTitle(h));
   });
   // Keep the outermost header when several nested elements match the same title.
   heads = heads.filter(h => !heads.some(o => o !== h && o.contains(h)));

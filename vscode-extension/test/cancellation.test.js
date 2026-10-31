@@ -74,3 +74,16 @@ test('cancel requests graceful process exit and subsequent runs accept activity'
   assert.equal(p.reasoning.blocks[0].active, true);
   assert.equal(p.currentStatus, 'Waiting');
 });
+
+
+test('successful completion settles task plans and reasoning without losing answers', () => {
+  const p = provider();
+  p.tasks = [{title: 'Build', state: 'In progress', active: true,
+    steps: [{title: 'Package', state: 'active'}]}];
+  p.updateProgress('completed', 'Done');
+  assert.equal(p.tasks[0].state, 'Completed');
+  assert.equal(p.tasks[0].active, false);
+  assert.equal(p.tasks[0].steps[0].state, 'completed');
+  assert.equal(p.reasoning.blocks[0].active, false);
+  assert.equal(p.reasoning.answers[0].text, 'Working');
+});

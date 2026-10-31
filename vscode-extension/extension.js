@@ -342,6 +342,13 @@ class ChatProvider {
   }
   updateProgress(stage, message, tasks) {
     if(this.cancelRequested && stage!=='cancelled') return;
+    if(stage==='completed'){
+      this.tasks=this.tasks.map(task=>/stop|cancel|fail/i.test(task.state||'')?task:{...task,state:'Completed',active:false,
+        steps:(task.steps||[]).map(step=>step.state==='failed'?step:{...step,state:'completed'})});
+      this.reasoning={...this.reasoning,blocks:this.reasoning.blocks.map(block=>({...block,active:false}))};
+      this.post({type:'tasks',items:this.tasks});
+      this.post({type:'reasoning',blocks:this.reasoning.blocks,answers:this.reasoning.answers});
+    }
     this.currentStatus = message;
     this.statusHistory.push({stage, message});
     if (this.statusHistory.length > 100) this.statusHistory.shift();

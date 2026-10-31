@@ -25,6 +25,16 @@ class CompletionTests(unittest.TestCase):
                 self.assertIn('no historical references', prompt)
                 self.assertTrue(prompt.endswith('To fix: Update the tests'))
 
+    def test_final_merge_clears_active_flags_and_preserves_steps(self):
+        block = {'title': 'Coding and executing', 'active': True,
+                 'steps': [{'title': 'Coding and executing', 'kind': 'coding'}]}
+        blocks, answers = rt.merge_live([block], [], [block],
+                                       [{'after': 1, 'text': 'Done.'}], final=True)
+        self.assertFalse(blocks[0]['active'])
+        self.assertTrue(block['active'])
+        self.assertEqual(blocks[0]['steps'], block['steps'])
+        self.assertEqual(answers, [{'after': 1, 'text': 'Done.'}])
+
     def test_zip_labels_without_filename(self):
         for label in ('Download the complete fixed repository ZIP', 'repo-fixed.zip'):
             self.assertRegex(label, rt.ZIP_NAME)
@@ -228,6 +238,25 @@ class BrowserTests(unittest.TestCase):
         self.page = self.browser.new_page()
         self.addCleanup(self.page.close)
         self.sel = rt.selectors_from_env()
+
+    def test_standalone_coding_controls_do_not_create_a_timeline(self):
+        self.page.set_content('''<main><p>Do not show working through the steps.</p>
+          <article data-message-author-role="assistant">
+          <details><summary>Coding and executing</summary><pre>secret()</pre></details>
+          <p>Done.</p></article></main>''')
+        _, blocks, answers = rt.read_screen(self.page, self.sel)
+        self.assertEqual(blocks, [])
+        self.assertIn('Done.', str(answers))
+        self.assertNotIn('secret()', str(answers))
+
+    def test_explicit_working_timeline_keeps_coding_steps(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <section><h2>Working through the steps</h2>
+          <details><summary>Coding and executing</summary><pre>secret()</pre></details>
+          </section></article></main>''')
+        _, blocks, _ = rt.read_screen(self.page, self.sel)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]['title'], 'Coding and executing')
 
     def test_descriptive_zip_link_with_opaque_target(self):
         self.page.set_content('<a href="/artifact/123">Download the complete fixed repository ZIP</a>')

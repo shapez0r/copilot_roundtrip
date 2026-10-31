@@ -250,7 +250,7 @@
   }
   function updateWork(blocks,byAfter,lastAfter){
     const d=workItem(), head=d.firstChild, timeline=d.lastChild;
-    const running=activity.busy, marker=head.children[0], title=head.children[1];
+    const running=activity.busy&&blocks.some(block=>block.active), marker=head.children[0], title=head.children[1];
     marker.className='work-state'+(running?' spinner':'');marker.textContent=running?'':'\u2713';
     const next='Working through the steps: '+workSummary(blocks);
     if(title.textContent!==next){
@@ -261,9 +261,10 @@
     head.setAttribute('aria-expanded',String(workUserOpen));head.title=workUserOpen?'Hide working steps':'Show working steps';
     timeline.hidden=!workUserOpen;timeline.replaceChildren();
     blocks.forEach((block,i)=>{
-      const step=document.createElement('div');step.className='work-step'+(block.active?' active':' completed');
+      const active=activity.busy&&block.active;
+      const step=document.createElement('div');step.className='work-step'+(active?' active':' completed');
       const top=document.createElement('div');top.className='work-step-top';
-      const marker=span('work-step-state'+(block.active?' spinner':''),block.active?'':'\u2713');marker.setAttribute('aria-hidden','true');
+      const marker=span('work-step-state'+(active?' spinner':''),active?'':'\u2713');marker.setAttribute('aria-hidden','true');
       top.append(marker,span('work-step-title',block.title||'Reasoning'));step.append(top);
       sectionSteps(block).forEach((detail,k)=>step.append(detail.kind==='completed'?completedStepItem(detail):thoughtItem(i,k,detail)));
       if(byAfter.has(i+1))step.append(updateAnswer(i+1,byAfter.get(i+1),lastAfter,true));

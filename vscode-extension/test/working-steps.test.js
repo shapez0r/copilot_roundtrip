@@ -127,3 +127,25 @@ test('active indicators smoothly build a shared brick wall and respect reduced m
   assert.deepEqual(frame(0).slice(2), frame(100).slice(2));
   assert.match(css, /@media \(prefers-reduced-motion:reduce\).*\.spinner::before,\.task-state.active::before,\.task-row-state.active::before\{animation:none\}/);
 });
+
+
+test('answers without reasoning do not create a working timeline', () => {
+  const v = view();
+  v.render([], [{after: 0, text: 'Repository completed.'}]);
+  assert.equal(v.work().className, 'live-answer');
+  assert.equal(v.work().firstChild.textContent, 'Repository completed.');
+});
+
+test('finished reasoning has no active summary while repository processing continues', () => {
+  const v = view(); v.update([block('Testing', false)]);
+  assert.equal(v.work().firstChild.children[0].className, 'work-state');
+  assert.equal(v.work().lastChild.firstChild.firstChild.firstChild.className, 'work-step-state');
+});
+
+test('idle view clears stale active step icons', () => {
+  const v = view(); v.activity.busy = false; v.update([block('Coding and executing')]);
+  const step = v.work().lastChild.firstChild;
+  assert.equal(step.className, 'work-step completed');
+  assert.equal(step.firstChild.firstChild.className, 'work-step-state');
+  assert.equal(step.firstChild.firstChild.textContent, '\u2713');
+});
