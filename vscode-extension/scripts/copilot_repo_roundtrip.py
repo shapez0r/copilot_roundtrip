@@ -341,7 +341,7 @@ def wait_for_ui(page, ms=UI_SETTLE_MS):
 # Collapsed sections are expanded once per header title so their steps can be read in both
 # visible and hidden browser modes. (3) The live intermediate answers: the latest assistant
 # message's text split at those sections. Code blocks are left out everywhere, and the
-# "Coding and executing" steps (code and its output only) are omitted from the steps.
+# "Coding and executing" steps are kept as empty steps (title only, their code is never sent).
 SCREEN_SCRIPT = r"""
 async (args) => {
   const tail = args.tail, custom = args.selector;
@@ -350,7 +350,7 @@ async (args) => {
   // "Coding and executing", "Searching the web", ...): a short "-ing" phrase without punctuation.
   const stepRe = /^[A-Z][a-z]+ing(?:\s+(?:and\s+)?[a-z][a-z-]*){0,3}$/;
   const doneRe = /^\s*(reasoned|thought|worked)\s+for\b/i;
-  // "Coding and executing" steps only hold code and its output, which are not shown.
+  // "Coding and executing" steps only hold code and its output, which are not shown (empty steps).
   const omitRe = /^(coding\b|executing code\b|running code\b)/i;
   const lineMax = 2000, maxSteps = 30;
   const visible = el => !!el && el.getClientRects().length > 0;
@@ -585,8 +585,9 @@ async (args) => {
       if (!step) { step = {title: active && !titleRe.test(title) ? title : 'Reasoning', lines: []}; steps.push(step); }
       step.lines.push(line);
     }
-    const kept = steps.filter(s => !omitRe.test(s.title))
-      .map(s => ({title: s.title, total: s.lines.length, lines: s.lines.slice(-tail)})).slice(-maxSteps);
+    // "Coding and executing" steps are kept as empty steps: their title is shown, their code never.
+    const kept = steps.map(s => omitRe.test(s.title) ? {title: s.title, total: 0, lines: []}
+      : {title: s.title, total: s.lines.length, lines: s.lines.slice(-tail)}).slice(-maxSteps);
     const lines = [];
     for (const s of steps) if (!omitRe.test(s.title)) lines.push(...s.lines);
     return {index, title, active, total: lines.length, lines: lines.slice(-tail), steps: kept};

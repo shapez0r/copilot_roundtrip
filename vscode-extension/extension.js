@@ -29,7 +29,8 @@ const ANSWER_MAX_CHARS = 4000;
 // Live output streamed by the script: reasoning sections [{title, active, total, lines:[latest <=10 lines],
 // steps:[{title, total, lines}]}] (title = current step name while running, "Reasoned for ..." when done)
 // and intermediate answers [{after, text}] shown after the first `after` reasoning sections.
-// "Coding and executing" steps hold only code and its output, so they are omitted.
+// "Coding and executing" steps hold only code and its output: they are kept as empty steps (no
+// code is ever displayed); the sidebar shows a placeholder text when such a step is expanded.
 const OMIT_STEP = /^(coding\b|executing code\b|running code\b)/i;
 function parseLiveLine(line) {
   if (!line.startsWith(REASONING_PREFIX)) return null;
@@ -40,9 +41,11 @@ function parseLiveLine(line) {
       const lines = (Array.isArray(b.lines) ? b.lines : []).map(String).slice(-REASONING_TAIL);
       const steps = (Array.isArray(b.steps) ? b.steps : []).filter(st => st && typeof st === 'object')
         .map(st => {
+          const title = String(st.title || 'Reasoning');
+          if (OMIT_STEP.test(title)) return {title, total: 0, lines: [], hidden: true};
           const stLines = (Array.isArray(st.lines) ? st.lines : []).map(String).slice(-REASONING_TAIL);
-          return {title: String(st.title || 'Reasoning'), total: Math.max(Number(st.total) || 0, stLines.length), lines: stLines};
-        }).filter(st => !OMIT_STEP.test(st.title));
+          return {title, total: Math.max(Number(st.total) || 0, stLines.length), lines: stLines};
+        });
       return {index: i, title: String(b.title || 'Reasoning'), active: b.active === true,
         total: Math.max(Number(b.total) || 0, lines.length), lines, steps};
     });

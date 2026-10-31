@@ -146,12 +146,16 @@
   //    with an activity icon, and the collapsed header previews that step's latest text below it;
   //  - when finished, the header becomes "Reasoned for 8m 6s" and shows nothing while collapsed;
   //  - expanded, it lists the section's steps (check icon + step name + text, latest 10 lines each).
-  // "Coding and executing" steps (code and its output) are omitted. Sections start collapsed, as
-  // in the web UI, and expand/collapse choices made by the user are kept while content updates.
-  const reasoningUserOpen={};
+  // "Coding and executing" steps are shown as empty, collapsible steps: their code is never shown,
+  // expanding one only shows CODING_PLACEHOLDER. Sections start collapsed, as in the web UI, and
+  // expand/collapse choices made by the user are kept while content updates.
+  const reasoningUserOpen={}, codingUserOpen={};
+  const CODING_STEP=/^(coding\b|executing code\b|running code\b)/i;
+  const CODING_PLACEHOLDER='AI coded something here, hidden for better viewing purposes. And basically who cares';
   const liveItems=new Map();
   function sectionSteps(b){
-    const steps=(Array.isArray(b.steps)?b.steps:[]).filter(s=>s&&!/^(coding\b|executing code\b|running code\b)/i.test(String(s.title||'')));
+    const steps=(Array.isArray(b.steps)?b.steps:[]).filter(s=>s&&typeof s==='object')
+      .map(s=>CODING_STEP.test(String(s.title||''))?{title:s.title,lines:[],total:0,coding:true}:s);
     if(steps.length)return steps;
     const lines=Array.isArray(b.lines)?b.lines:[];
     return lines.length?[{title:'Reasoning',lines,total:b.total||lines.length}]:[];
@@ -176,9 +180,33 @@
     el=document.createElement('div');el.className='rt-step';
     const top=document.createElement('div');top.className='rt-step-head';
     const icon=span('rt-step-icon','');icon.setAttribute('aria-hidden','true');
-    top.append(icon,span('rt-step-title',''));
+    const chev=span('rt-chevron rt-step-chevron','\u203A');chev.setAttribute('aria-hidden','true');chev.hidden=true;
+    top.append(icon,span('rt-step-title',''),chev);
     const text=document.createElement('div');text.className='rt-step-text';
+    // Only "Coding and executing" steps are collapsible (see setCodingStep).
+    const toggle=()=>{if(!el.dataset.codingKey)return;codingUserOpen[el.dataset.codingKey]=top.getAttribute('aria-expanded')!=='true';renderReasoning(lastReasoning,lastAnswers);};
+    top.addEventListener('click',toggle);
+    top.addEventListener('keydown',e=>{if(el.dataset.codingKey&&(e.key==='Enter'||e.key===' ')){e.preventDefault();toggle();}});
     el.append(top,text);list.append(el);return el;
+  }
+  // Turns a step element into an empty collapsible "Coding and executing" step (key set), or back
+  // into a plain step (key null). Its code is never displayed, only the placeholder when expanded.
+  function setCodingStep(el,key){
+    const top=el.firstChild, chev=top.children[2], textEl=el.children[1];
+    el.classList.toggle('coding',!!key);
+    chev.hidden=!key;
+    if(!key){
+      delete el.dataset.codingKey;
+      for(const a of ['role','tabindex','aria-expanded','title'])top.removeAttribute(a);
+      return false;
+    }
+    el.dataset.codingKey=key;
+    const open=!!codingUserOpen[key];
+    top.setAttribute('role','button');top.setAttribute('tabindex','0');
+    top.setAttribute('aria-expanded',String(open));top.title=open?'Hide':'Show';
+    textEl.hidden=!open;
+    setText(textEl,open?CODING_PLACEHOLDER:'');
+    return true;
   }
   function setText(el,value){if(el.textContent!==value){el.textContent=value;el.scrollTop=el.scrollHeight;}}
   function answerItem(after){
@@ -193,7 +221,7 @@
     const box=$('reasoning'), list=$('reasoningBlocks');
     blocks=Array.isArray(blocks)?blocks:[];
     answers=(Array.isArray(answers)?answers:[]).filter(a=>a&&typeof a.text==='string'&&a.text.trim());
-    if(!blocks.length&&!answers.length){box.hidden=true;list.replaceChildren();liveItems.clear();for(const k of Object.keys(reasoningUserOpen))delete reasoningUserOpen[k];return;}
+    if(!blocks.length&&!answers.length){box.hidden=true;list.replaceChildren();liveItems.clear();for(const o of [reasoningUserOpen,codingUserOpen])for(const k of Object.keys(o))delete o[k];return;}
     box.hidden=false;
     // Order: answers after N sections are placed right after section N (after=0: before the first one).
     const byAfter=new Map();
@@ -237,13 +265,14 @@
         icon.className='rt-step-icon'+(current?' spinner':'');
         icon.textContent=current?'':'\u2713';
         el.firstChild.children[1].textContent=s.title||'Reasoning';
+        if(setCodingStep(el,s.coding?i+':'+k:null))return;
         const lines=Array.isArray(s.lines)?s.lines:[];
         const textEl=el.children[1];
         textEl.hidden=!lines.length;
         setText(textEl,lines.join('\n'));
       });
       while(stepsBox.children.length>steps.length)stepsBox.lastChild.remove();
-      if(open&&!steps.length){const empty=stepItem(stepsBox,0);empty.firstChild.children[1].textContent=running?'Waiting for reasoning text...':'No reasoning text available.';empty.firstChild.children[0].textContent='';empty.children[1].hidden=true;}
+      if(open&&!steps.length){const empty=stepItem(stepsBox,0);setCodingStep(empty,null);empty.firstChild.children[1].textContent=running?'Waiting for reasoning text...':'No reasoning text available.';empty.firstChild.children[0].textContent='';empty.children[1].hidden=true;}
       ordered.push(d);
       pushAnswer(i+1);
     });
