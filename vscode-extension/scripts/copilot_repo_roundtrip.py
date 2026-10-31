@@ -1287,8 +1287,9 @@ def enable_temporary_chat(page, sel, timeout_seconds=30):
 # without a download attribute, "download" in the href or a "Download" button. Such links are
 # also accepted when their text or href names a .zip file (never the uploaded .zip.txt archive).
 ZIP_LINK_SELECTOR = ('a[href*=".zip" i], a:has-text(".zip"), [role="link"]:has-text(".zip"), '
-                     'button:has-text(".zip")')
-ZIP_NAME = re.compile(r"\.zip\b(?!\.txt)", re.I)
+                     'button:has-text(".zip"), a:has-text("ZIP"), [role="link"]:has-text("ZIP"), '
+                     'button:has-text("ZIP")')
+ZIP_NAME = re.compile(r"\bzip\b(?!\.txt)", re.I)
 # A link that did not yield a file (e.g. it was rendered before the file was ready) is retried.
 DOWNLOAD_RETRY_SECONDS = 10
 DOWNLOAD_MAX_ATTEMPTS = 6
@@ -1570,26 +1571,6 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                     if current_url and current_url != reported_url:
                         reported_url = current_url
                         emit_chat(current_url)
-                signature, blocks, answers = read_screen(page, sel, prompt)
-                if signature is not None and signature != last_signature:
-                    if last_signature is not None:
-                        last_activity = now
-                    last_signature = signature
-                # Reasoning blocks and intermediate (live) answers are streamed together.
-                if blocks is not None:
-                    live_blocks, live_answers = merge_live(live_blocks, live_answers, blocks, answers)
-                live = None if blocks is None else (live_blocks, live_answers)
-                if live is not None and live != last_live:
-                    last_live = live
-                    last_activity = now if (live_blocks or live_answers) else last_activity
-                    emit_reasoning(live_blocks, live_answers)
-                idle = now - last_activity
-                if idle >= idle_limit:
-                    break
-                if now - last_update >= 15:
-                    emit_status("waiting", f"Still waiting for Copilot response ({int(now - started)}s elapsed, "
-                                           f"no new output for {int(idle)}s of {idle_limit}s allowed)...")
-                    last_update = now
                 now = time.monotonic()
                 for node, href, key in download_candidates(page, sel, upload_names):
                     if href and href in prior_keys:
@@ -1610,6 +1591,30 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                             downloaded = None
                     if downloaded is not None:
                         break
+                # A downloadable result is independent of reasoning/prose availability.
+                # Check it before expanding any optional reasoning panels.
+                if downloaded is not None:
+                    break
+                signature, blocks, answers = read_screen(page, sel, prompt)
+                if signature is not None and signature != last_signature:
+                    if last_signature is not None:
+                        last_activity = now
+                    last_signature = signature
+                # Reasoning blocks and intermediate (live) answers are streamed together.
+                if blocks is not None:
+                    live_blocks, live_answers = merge_live(live_blocks, live_answers, blocks, answers)
+                live = None if blocks is None else (live_blocks, live_answers)
+                if live is not None and live != last_live:
+                    last_live = live
+                    last_activity = now if (live_blocks or live_answers) else last_activity
+                    emit_reasoning(live_blocks, live_answers)
+                idle = now - last_activity
+                if idle >= idle_limit:
+                    break
+                if now - last_update >= 15:
+                    emit_status("waiting", f"Still waiting for Copilot response ({int(now - started)}s elapsed, "
+                                           f"no new output for {int(idle)}s of {idle_limit}s allowed)...")
+                    last_update = now
                 if downloaded is None:
                     pause(page, 1500)
             if downloaded is None:
