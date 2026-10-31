@@ -343,7 +343,7 @@ def wait_for_ui(page, ms=UI_SETTLE_MS):
 SCREEN_SCRIPT = r"""
 async (args) => {
   const tail = args.tail, custom = args.selector;
-  const titleRe = /^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
+  const titleRe = /^\s*(reasoning|reasoned|thinking|thought|thought for|worked for)\b/i;
   // Match short step-name headers while a section is running.
   const stepRe = /^[A-Z][a-z]+ing(?:\s+(?:and\s+)?[a-z][a-z-]*){0,3}$/;
   const doneRe = /^\s*(reasoned|thought|worked)\s+for\b/i;
@@ -431,6 +431,24 @@ async (args) => {
   let customHeads = null;
   if (custom) { try { customHeads = Array.from(document.querySelectorAll(custom)); } catch (_) { customHeads = null; } }
   let heads = customHeads || Array.from(document.querySelectorAll('button, [role="button"], summary, [aria-expanded]'));
+  // Some responses expose a plain duration header above coding cards, without a task plan.
+  const plainHeads = new Set();
+  if (!customHeads) {
+    const labelRe = /^(?:reasoning|thinking|(?:reasoned|thought|worked) for (?:\d+(?:\.\d+)?\s*(?:ms|s|m|h)\s*)+)$/i;
+    for (const selector of args.assistant || []) {
+      for (const root of document.querySelectorAll(selector)) {
+        for (const el of root.querySelectorAll('span, p, div, h2, h3')) {
+          if (!visible(el) || prior(el) || !labelRe.test(textOf(el)) ||
+              el.closest('button, [role="button"], summary, pre, code') ||
+              el.querySelector('button, [role="button"], summary, [aria-expanded]') ||
+              Array.from(el.children).some(child => labelRe.test(textOf(child)))) continue;
+          plainHeads.add(el);
+        }
+      }
+    }
+    heads = Array.from(new Set([...heads, ...plainHeads])).sort((a, b) =>
+      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+  }
   const headTitle = h => textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb\u2304\u2335\u02c5\u25be\u25b8]+$/, '').trim();
   const chrome = 'form, nav, header, footer, [role="toolbar"], [role="menu"], [role="menubar"], [role="dialog"], [role="tablist"]';
   heads = heads.filter(h => {
@@ -550,6 +568,8 @@ async (args) => {
     if (h.tagName === 'SUMMARY' && h.parentElement) return proseOf(h.parentElement, h);
     return proseOf(contentEl(h));
   };
+  // Plain labels qualify only when the adjacent panel actually contains working steps.
+  heads = heads.filter(h => !plainHeads.has(h) || contentEl(h));
   markOutside();
   await verifySections();
   // Expand nested prose steps, but never coding panels.

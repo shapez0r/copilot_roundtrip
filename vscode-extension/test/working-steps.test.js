@@ -149,3 +149,22 @@ test('idle view clears stale active step icons', () => {
   assert.equal(step.firstChild.firstChild.className, 'work-step-state');
   assert.equal(step.firstChild.firstChild.textContent, '\u2713');
 });
+
+test('coding-only duration sections render without a task card or plan', () => {
+  const v = view();
+  v.update([block('Reasoned for 12s', false, [
+    {title: 'Coding and executing', kind: 'coding', lines: [], total: 0},
+    {title: 'Coding and executing', kind: 'coding', lines: [], total: 0}
+  ])]);
+  const work = v.work();
+  assert.equal(work.className, 'work-section');
+  assert.equal(work.firstChild.children[0].className, 'work-state');
+  work.firstChild.events.click();
+  assert.equal(work.lastChild.hidden, false);
+  const step = work.lastChild.firstChild;
+  assert.equal(step.children.length, 3);
+  const coding = step.children[1];
+  coding.firstChild.events.click();
+  assert.equal(v.work().lastChild.firstChild.children[1].lastChild.textContent,
+    'Code and command output are hidden.');
+});

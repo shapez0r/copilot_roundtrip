@@ -239,6 +239,55 @@ class BrowserTests(unittest.TestCase):
         self.addCleanup(self.page.close)
         self.sel = rt.selectors_from_env()
 
+    def test_plain_reasoned_headers_capture_coding_cards_without_tasks(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <p>I am checking the implementation.</p>
+          <div><span>Reasoned for 12s</span><span aria-hidden="true">⌄</span></div>
+          <section><div>Coding and executing<pre>secret_one()</pre></div>
+            <div>Coding and executing<pre>secret_two()</pre></div></section>
+          <p>I found the cause.</p>
+          <div>Reasoned for 24s</div>
+          <section><div>Coding and executing<pre>secret_three()</pre></div></section>
+          <p>Done.</p></article></main>''')
+        self.assertEqual(rt.read_task_cards(self.page), [])
+        _, blocks, answers = rt.read_screen(self.page, self.sel)
+        self.assertEqual([b['title'] for b in blocks], ['Reasoned for 12s', 'Reasoned for 24s'])
+        self.assertEqual([len(b['steps']) for b in blocks], [2, 1])
+        self.assertTrue(all(not b['active'] for b in blocks))
+        self.assertTrue(all(s['kind'] == 'coding' and not s['lines']
+                            for b in blocks for s in b['steps']))
+        self.assertEqual([a['after'] for a in answers], [0, 1, 2])
+        self.assertNotIn('secret_', str((blocks, answers)))
+        self.assertIn('I found the cause.', answers[1]['text'])
+
+    def test_plain_reasoning_header_requires_an_adjacent_step_panel(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <p>Reasoning</p><p>This is ordinary answer prose.</p>
+          <p>Reasoned for 12s</p><p>Done.</p></article></main>''')
+        _, blocks, answers = rt.read_screen(self.page, self.sel)
+        self.assertEqual(blocks, [])
+        self.assertIn('This is ordinary answer prose.', str(answers))
+
+    def test_plain_reasoning_headers_ignore_prior_turns_and_code(self):
+        self.page.set_content('''<main>
+          <article data-message-author-role="assistant" data-roundtrip-prior-msg="1">
+            <div>Reasoned for 12s</div><section>Coding and executing<pre>old()</pre></section>
+          </article><article data-message-author-role="assistant">
+            <pre><span>Reasoned for 24s</span></pre><p>Done.</p>
+          </article></main>''')
+        _, blocks, answers = rt.read_screen(self.page, self.sel)
+        self.assertEqual(blocks, [])
+        self.assertNotIn('old()', str(answers))
+
+    def test_plain_running_reasoning_header_captures_coding_activity(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <div>Reasoning</div><section>Coding and executing<pre>secret()</pre></section>
+          </article></main>''')
+        _, blocks, _ = rt.read_screen(self.page, self.sel)
+        self.assertEqual(len(blocks), 1)
+        self.assertTrue(blocks[0]['active'])
+        self.assertEqual(blocks[0]['steps'][0]['kind'], 'coding')
+
     def test_standalone_coding_controls_do_not_create_a_timeline(self):
         self.page.set_content('''<main><p>Do not show working through the steps.</p>
           <article data-message-author-role="assistant">
