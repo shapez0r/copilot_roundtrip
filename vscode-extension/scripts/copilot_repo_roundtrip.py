@@ -409,42 +409,50 @@ SCREEN_SCRIPT = r"""
     for (const s of steps) if (!omitRe.test(s.title)) lines.push(...s.lines);
     return {index, title, active, total: lines.length, lines: lines.slice(-tail), steps: kept};
   });
-  // Live intermediate answers: the latest assistant message's visible text, split at the
-  // reasoning headers ("answer", "Reasoned for 38s", "answer", "Reasoned for 4s", "answer").
+  // Live intermediate answers, as in the web UI: the short interim answers Copilot writes before,
+  // between and after the "Reasoned for ..." sections ("Now the Python scraper changes.",
+  // "Reasoned for 5s", "Now extension.js parsing.", "Reasoned for 3s", ..., final answer).
+  // Copilot may render each interim answer as its own message element, so every assistant element
+  // of the current turn is read (not only the latest one), and the whole turn region around the
+  // reasoning headers is read as well; whichever finds interim answers at more positions is used.
   const answers = [];
   try {
     const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
-    let root = null;
+    const outermost = list => list.filter(n => !list.some(o => o !== n && o.contains(n)));
+    let found = [];
     for (const s of args.assistant || []) {
-      let nodes = [];
-      try { nodes = Array.from(document.querySelectorAll(s)); } catch (_) { nodes = []; }
-      for (let i = nodes.length - 1; i >= 0 && !root; i--) if (visible(nodes[i]) && textOf(nodes[i])) root = nodes[i];
-      if (root) break;
+      try { found.push(...Array.from(document.querySelectorAll(s))); } catch (_) { /* invalid selector */ }
     }
-    // Fallback: the outermost ancestor of the latest reasoning header that excludes the user's prompt.
+    found = outermost(Array.from(new Set(found)).filter(n => visible(n) && textOf(n)))
+      .sort((a, b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+    // The current turn: the outermost ancestor of the latest reasoning header that excludes the user's prompt.
     const snippet = norm(args.prompt).slice(0, 60);
-    if (!root && heads.length && snippet) {
+    let region = null;
+    if (heads.length && snippet) {
       let el = heads[heads.length - 1].parentElement;
       while (el && el.parentElement && el.parentElement !== document.body &&
              !norm(textOf(el.parentElement)).includes(snippet)) el = el.parentElement;
-      if (el && !norm(textOf(el)).includes(snippet)) root = el;
+      if (el && !norm(textOf(el)).includes(snippet)) region = el;
     }
-    if (root) {
-      // Reasoning headers split the text; their expanded reasoning content is skipped.
-      const breaks = new Map(), skip = new Set();
-      heads.forEach((h, i) => {
-        breaks.set(h.tagName === 'SUMMARY' && h.parentElement ? h.parentElement : h, i);
-        if (h.tagName !== 'SUMMARY' && expandedState(h) !== 'false') {
-          const c = contentEl(h);
-          if (c && !c.contains(root)) skip.add(c);
-        }
-      });
-      const before = heads.filter(h => !root.contains(h) &&
-        (h.compareDocumentPosition(root) & Node.DOCUMENT_POSITION_FOLLOWING)).length;
+    let turnNodes = region ? found.filter(n => region.contains(n) || n.contains(region)) : [];
+    if (!turnNodes.length && found.length) turnNodes = [found[found.length - 1]];
+    // Reasoning headers split the text; the content of expanded sections (their steps) is skipped.
+    const breaks = new Map(), skip = new Set();
+    heads.forEach((h, i) => {
+      breaks.set(h.tagName === 'SUMMARY' && h.parentElement ? h.parentElement : h, i);
+      const state = expandedState(h);
+      if (h.tagName !== 'SUMMARY' && state !== 'false') {
+        const c = contentEl(h);
+        // Without an explicit expanded state, only a steps card (expanders or code) is skipped, so a
+        // following interim answer is never mistaken for the section's content.
+        if (c && (state === 'true' || hasCode(c) || c.querySelector('[aria-expanded], button, [role="button"]'))) skip.add(c);
+      }
+    });
+    const ignored = /^(SCRIPT|STYLE|NOSCRIPT|SVG|BUTTON|TEXTAREA|INPUT|SELECT|TEMPLATE|IFRAME|CANVAS)$/;
+    const collect = roots => {
       const segments = [];
-      let cur = {after: before, text: ''};
-      const ignored = /^(SCRIPT|STYLE|NOSCRIPT|SVG|BUTTON|TEXTAREA|INPUT|SELECT|TEMPLATE|IFRAME|CANVAS)$/;
-      const walk = (node, pre) => {
+      let cur = null;
+      const walk = (node, root, pre) => {
         if (node.nodeType === 3) { cur.text += pre ? node.nodeValue : node.nodeValue.replace(/\s+/g, ' '); return; }
         if (node.nodeType !== 1) return;
         const el = node;
@@ -457,20 +465,32 @@ SCREEN_SCRIPT = r"""
         const block = !cs.display.startsWith('inline') && cs.display !== 'contents';
         const keep = pre || /^pre/.test(cs.whiteSpace);
         if (block) cur.text += '\n';
-        for (const child of el.childNodes) walk(child, keep);
+        for (const child of el.childNodes) walk(child, root, keep);
         if (block) cur.text += '\n';
       };
-      walk(root, false);
-      segments.push(cur);
+      for (const root of roots) {
+        // Text of this root starts after every reasoning header that precedes it on screen.
+        const before = heads.filter(h => !root.contains(h) &&
+          (h.compareDocumentPosition(root) & Node.DOCUMENT_POSITION_FOLLOWING)).length;
+        cur = {after: before, text: ''};
+        walk(root, root, false);
+        segments.push(cur);
+      }
+      const out = [];
       for (const seg of segments) {
-        let text = seg.text.split('\n').map(l => l.replace(/[ \t\u00a0]+/g, ' ').trim()).join('\n')
+        let text = seg.text.split('\n').map(l => l.replace(/[ \t\u00a0]+/g, ' ').trim())
+          .filter(l => !/^(copilot|you)\s+said\s*:?$/i.test(l)).join('\n')
           .replace(/\n{2,}/g, '\n').trim();
         if (!text) continue;
         if (text.length > args.maxChars) text = '\u2026' + text.slice(-args.maxChars);
-        const last = answers[answers.length - 1];
-        if (last && last.after === seg.after) last.text += '\n\n' + text; else answers.push({after: seg.after, text});
+        const last = out[out.length - 1];
+        if (last && last.after === seg.after) last.text += '\n\n' + text; else out.push({after: seg.after, text});
       }
-    }
+      return out;
+    };
+    const fromMessages = turnNodes.length ? collect(turnNodes) : [];
+    const fromRegion = region ? collect([region]) : [];
+    answers.push(...(fromRegion.length > fromMessages.length ? fromRegion : fromMessages));
   } catch (_) { /* live answers are best effort */ }
   // Signature of on-screen text; elapsed-time counters and animated dots are ignored.
   const root = document.querySelector('main') || document.body;

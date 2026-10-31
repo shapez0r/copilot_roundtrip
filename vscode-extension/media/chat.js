@@ -204,6 +204,9 @@
       const el=answerItem(k), pre=el.firstChild, text=byAfter.get(k);
       // The newest answer while the run is busy is still streaming.
       el.classList.toggle('active',activity.busy&&k===lastAfter&&k===blocks.length);
+      // Short interim answers between "Reasoned for ..." sections ("Now the Python scraper changes.")
+      // are shown in full as plain text lines, like in the web UI.
+      el.classList.toggle('interim',k<blocks.length);
       if(pre.textContent!==text){pre.textContent=text;pre.scrollTop=pre.scrollHeight;}
       ordered.push(el);
     };

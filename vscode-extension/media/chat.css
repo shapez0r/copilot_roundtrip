@@ -102,3 +102,8 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .live-answer-text{margin:2px 0;max-height:15em;overflow:auto;font-family:var(--vscode-font-family);font-size:12px;line-height:1.5;user-select:text;-webkit-user-select:text;cursor:text}
 .live-answer.active .live-answer-text::after{content:' \2026';animation:reasoning-pulse 1.2s ease-in-out infinite}
 @media (prefers-reduced-motion:reduce){.live-answer.active .live-answer-text::after{animation:none}}
+/* Interim answers between reasoning sections, as in the web UI: plain full-size text lines, each
+   followed by its "Reasoned for ..." header. */
+.live-answer-text{font-size:13px;color:var(--vscode-foreground)}
+.live-answer.interim{padding-top:4px}
+.live-answer.interim .live-answer-text{max-height:none;overflow:visible}
