@@ -139,25 +139,48 @@
     spinner.hidden=!running;
     if(text.textContent!==next){text.textContent=next;text.classList.remove('rotate');void text.offsetWidth;text.classList.add('rotate');}
   }
-  // Live response: an outer collapsible panel showing, in on-screen order, the model's
-  // intermediate (live) answers interleaved with one collapsible section per reasoning block
-  // ("answer", "Reasoned for 38s", "answer", "Reasoned for 4s", "answer"). Each reasoning
-  // block shows only its latest 10 lines. Open/closed choices made by the user are kept
-  // while the content updates in real time.
+  // Live response, laid out like the Copilot web UI. In on-screen order it shows the model's
+  // intermediate (live) answers interleaved with its reasoning sections ("answer", section,
+  // "answer", section, ..., final answer). Each section is one collapsible header:
+  //  - while running, the header shows the current step name ("Reasoning", "Creating file", ...)
+  //    with an activity icon, and the collapsed header previews that step's latest text below it;
+  //  - when finished, the header becomes "Reasoned for 8m 6s" and shows nothing while collapsed;
+  //  - expanded, it lists the section's steps (check icon + step name + text, latest 10 lines each).
+  // "Coding and executing" steps (code and its output) are omitted. Sections start collapsed, as
+  // in the web UI, and expand/collapse choices made by the user are kept while content updates.
   const reasoningUserOpen={};
   const liveItems=new Map();
+  function sectionSteps(b){
+    const steps=(Array.isArray(b.steps)?b.steps:[]).filter(s=>s&&!/^(coding\b|executing code\b|running code\b)/i.test(String(s.title||'')));
+    if(steps.length)return steps;
+    const lines=Array.isArray(b.lines)?b.lines:[];
+    return lines.length?[{title:'Reasoning',lines,total:b.total||lines.length}]:[];
+  }
   function blockItem(i){
     const key='b'+i;
     if(liveItems.has(key))return liveItems.get(key);
-    const d=document.createElement('details');d.className='reasoning-block';
-    const sum=document.createElement('summary');
-    sum.append(span('reasoning-block-title',''),span('reasoning-block-meta',''));
-    const pre=document.createElement('pre');pre.className='reasoning-lines';
-    d.append(sum,pre);
-    // Record the user's choice; a click on the summary toggles the section.
-    sum.addEventListener('click',()=>{reasoningUserOpen[i]=!d.open;});
+    const d=document.createElement('div');d.className='rt-section';
+    const head=document.createElement('button');head.type='button';head.className='rt-head';head.setAttribute('aria-expanded','false');
+    const icon=document.createElement('span');icon.className='rt-icon spinner';icon.setAttribute('aria-hidden','true');
+    const chev=span('rt-chevron','\u203A');chev.setAttribute('aria-hidden','true');
+    head.append(icon,span('rt-title',''),chev);
+    const preview=document.createElement('div');preview.className='rt-preview';
+    const steps=document.createElement('div');steps.className='rt-steps';steps.hidden=true;
+    d.append(head,preview,steps);
+    head.addEventListener('click',()=>{reasoningUserOpen[i]=head.getAttribute('aria-expanded')!=='true';renderReasoning(lastReasoning,lastAnswers);});
     liveItems.set(key,d);return d;
   }
+  function stepItem(list,k){
+    let el=list.children[k];
+    if(el)return el;
+    el=document.createElement('div');el.className='rt-step';
+    const top=document.createElement('div');top.className='rt-step-head';
+    const icon=span('rt-step-icon','');icon.setAttribute('aria-hidden','true');
+    top.append(icon,span('rt-step-title',''));
+    const text=document.createElement('div');text.className='rt-step-text';
+    el.append(top,text);list.append(el);return el;
+  }
+  function setText(el,value){if(el.textContent!==value){el.textContent=value;el.scrollTop=el.scrollHeight;}}
   function answerItem(after){
     const key='a'+after;
     if(liveItems.has(key))return liveItems.get(key);
@@ -172,13 +195,7 @@
     answers=(Array.isArray(answers)?answers:[]).filter(a=>a&&typeof a.text==='string'&&a.text.trim());
     if(!blocks.length&&!answers.length){box.hidden=true;list.replaceChildren();liveItems.clear();for(const k of Object.keys(reasoningUserOpen))delete reasoningUserOpen[k];return;}
     box.hidden=false;
-    const anyActive=blocks.some(b=>b.active);
-    $('reasoningSpinner').hidden=!(activity.busy&&(anyActive||answers.length>0));
-    const parts=[];
-    if(answers.length)parts.push(answers.length+(answers.length===1?' answer':' answers'));
-    if(blocks.length)parts.push(blocks.length+(blocks.length===1?' reasoning block':' reasoning blocks'));
-    $('reasoningTitle').textContent='Live response ('+parts.join(', ')+')';
-    // Order: answers after N blocks are placed right after block N (after=0: before the first block).
+    // Order: answers after N sections are placed right after section N (after=0: before the first one).
     const byAfter=new Map();
     for(const a of answers){const k=Math.max(0,Math.min(blocks.length,Number(a.after)||0));byAfter.set(k,(byAfter.has(k)?byAfter.get(k)+'\n\n':'')+a.text.trim());}
     const ordered=[], lastAfter=Math.max(-1,...byAfter.keys());
@@ -193,17 +210,37 @@
     pushAnswer(0);
     blocks.forEach((b,i)=>{
       const d=blockItem(i);
-      const [sum,pre]=d.children;
-      sum.children[0].textContent=(i+1)+'. '+(b.title||'Reasoning');
-      sum.children[0].classList.toggle('active',!!b.active&&activity.busy);
-      const lines=Array.isArray(b.lines)?b.lines:[];
-      const hiddenCount=Math.max(0,(b.total||0)-lines.length);
-      sum.children[1].textContent=lines.length?(hiddenCount?'last '+lines.length+' of '+b.total+' lines':lines.length+(lines.length===1?' line':' lines')):'';
-      const text=lines.length?lines.join('\n'):(b.active?'Waiting for reasoning text...':'No reasoning text available.');
-      if(pre.textContent!==text){pre.textContent=text;pre.scrollTop=pre.scrollHeight;}
-      // Default: the latest block is expanded, earlier blocks are collapsed.
-      const open=i in reasoningUserOpen?reasoningUserOpen[i]:i===blocks.length-1;
-      if(d.open!==open)d.open=open;
+      const [head,preview,stepsBox]=d.children;
+      const running=!!b.active&&activity.busy;
+      const steps=sectionSteps(b);
+      d.classList.toggle('active',running);
+      d.classList.toggle('done',!b.active);
+      head.children[0].hidden=!running;
+      head.children[1].textContent=b.title||'Reasoning';
+      const open=i in reasoningUserOpen?reasoningUserOpen[i]:false;
+      head.setAttribute('aria-expanded',String(open));
+      head.title=open?'Hide steps':'Show steps';
+      // Collapsed and running: preview of the current step's latest text under the header.
+      const last=steps[steps.length-1];
+      const previewText=running&&!open&&last&&Array.isArray(last.lines)?last.lines.join('\n'):'';
+      preview.hidden=!previewText;
+      setText(preview,previewText);
+      stepsBox.hidden=!open;
+      steps.forEach((s,k)=>{
+        const el=stepItem(stepsBox,k);
+        const current=running&&k===steps.length-1;
+        el.classList.toggle('current',current);
+        const icon=el.firstChild.children[0];
+        icon.className='rt-step-icon'+(current?' spinner':'');
+        icon.textContent=current?'':'\u2713';
+        el.firstChild.children[1].textContent=s.title||'Reasoning';
+        const lines=Array.isArray(s.lines)?s.lines:[];
+        const textEl=el.children[1];
+        textEl.hidden=!lines.length;
+        setText(textEl,lines.join('\n'));
+      });
+      while(stepsBox.children.length>steps.length)stepsBox.lastChild.remove();
+      if(open&&!steps.length){const empty=stepItem(stepsBox,0);empty.firstChild.children[1].textContent=running?'Waiting for reasoning text...':'No reasoning text available.';empty.firstChild.children[0].textContent='';empty.children[1].hidden=true;}
       ordered.push(d);
       pushAnswer(i+1);
     });

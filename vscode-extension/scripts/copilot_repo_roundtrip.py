@@ -64,6 +64,9 @@ ASSISTANT_SELECTORS = (
 def emit_reasoning(blocks, answers=None):
     """Stream the latest reasoning blocks and intermediate answers on stderr (one JSON line per change).
 
+    blocks: [{"title", "active", "total", "lines", "steps": [{"title", "total", "lines"}]}] - one per
+    reasoning section; "title" is the current step name while running, "Reasoned for ..." when done.
+
     answers: [{"after": N, "text": ...}] - live answer text shown after the first N reasoning blocks
     (after=0 is text before the first block), as in "answer / Reasoned for 38s / answer / ...".
     """
@@ -100,6 +103,20 @@ def merge_live(prev_blocks, prev_answers, blocks, answers):
         if old and not block.get("lines") and old.get("lines"):
             block["lines"] = list(old["lines"])
             block["total"] = max(int(old.get("total") or 0), len(old["lines"]))
+        # Steps ("Reasoning", "Creating file", ...) already seen are kept the same way.
+        old_steps = (old or {}).get("steps") or []
+        new_steps = block.get("steps") or []
+        if len(new_steps) < len(old_steps):
+            new_steps = new_steps + [dict(s) for s in old_steps[len(new_steps):]]
+        steps = []
+        for k, item in enumerate(new_steps):
+            item = dict(item)
+            prev = old_steps[k] if k < len(old_steps) else None
+            if prev and prev.get("title") == item.get("title") and not item.get("lines") and prev.get("lines"):
+                item["lines"] = list(prev["lines"])
+                item["total"] = max(int(prev.get("total") or 0), len(prev["lines"]))
+            steps.append(item)
+        block["steps"] = steps
         merged_blocks.append(block)
     # Blocks that temporarily vanished from the screen are kept as well.
     for old in prev_blocks[len(merged_blocks):]:
@@ -249,15 +266,24 @@ def wait_for_ui(page, ms=UI_SETTLE_MS):
 
 
 # Collects (1) a cheap signature of the visible chat text, used to detect on-screen output,
-# and (2) the reasoning blocks ("Reasoning...", "Reasoned for 38s", ...). Collapsed reasoning
-# blocks are expanded once so their text can be read in both visible and hidden browser modes.
-# (3) The live intermediate answers: the latest assistant message's text split at those blocks.
-# Code blocks (e.g. the code shown under "Coding and executing") are left out of both the
-# reasoning lines and the live answers; only the step titles and prose are streamed.
+# and (2) the reasoning sections, as in the Copilot web UI: while a section runs its header shows
+# the current step name ("Reasoning", "Creating file", "Coding and executing", ...); when it
+# finishes the header becomes "Reasoned for 8m 6s". Each section holds steps (step title + text).
+# Collapsed sections are expanded once per header title so their steps can be read in both
+# visible and hidden browser modes. (3) The live intermediate answers: the latest assistant
+# message's text split at those sections. Code blocks are left out everywhere, and the
+# "Coding and executing" steps (code and its output only) are omitted from the steps.
 SCREEN_SCRIPT = r"""
 (args) => {
   const tail = args.tail, custom = args.selector;
   const titleRe = /^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
+  // Section headers also show the current step name while running ("Creating file",
+  // "Coding and executing", "Searching the web", ...): a short "-ing" phrase without punctuation.
+  const stepRe = /^[A-Z][a-z]+ing(?:\s+(?:and\s+)?[a-z][a-z-]*){0,3}$/;
+  const doneRe = /^\s*(reasoned|thought|worked)\s+for\b/i;
+  // "Coding and executing" steps only hold code and its output, which are not shown.
+  const omitRe = /^(coding\b|executing code\b|running code\b)/i;
+  const lineMax = 2000, maxSteps = 30;
   const visible = el => !!el && el.getClientRects().length > 0;
   const textOf = el => (el && (el.innerText || el.textContent) || '').trim();
   // Code blocks (e.g. under "Coding and executing") are not streamed: only the step titles and
@@ -292,7 +318,9 @@ SCREEN_SCRIPT = r"""
       const cs = getComputedStyle(node);
       if (cs.display === 'none' || cs.visibility === 'hidden') return;
       if (node.tagName === 'BR') { out += '\n'; return; }
-      const block = !cs.display.startsWith('inline') && cs.display !== 'contents';
+      // Buttons (e.g. a step's expander) are kept on their own line so step names stay separate.
+      const block = !cs.display.startsWith('inline') && cs.display !== 'contents' ||
+        node.tagName === 'BUTTON' || node.getAttribute('role') === 'button';
       if (block) out += '\n';
       for (const child of node.childNodes) walk(child);
       if (block) out += '\n';
@@ -303,12 +331,31 @@ SCREEN_SCRIPT = r"""
   let customHeads = null;
   if (custom) { try { customHeads = Array.from(document.querySelectorAll(custom)); } catch (_) { customHeads = null; } }
   let heads = customHeads || Array.from(document.querySelectorAll('button, [role="button"], summary, [aria-expanded]'));
+  const headTitle = h => textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb\u2304\u2335\u02c5\u25be\u25b8]+$/, '').trim();
+  const chrome = 'form, nav, header, footer, [role="toolbar"], [role="menu"], [role="menubar"], [role="dialog"], [role="tablist"]';
   heads = heads.filter(h => {
     const t = textOf(h);
-    return visible(h) && t && t.length <= 120 && (customHeads || titleRe.test(t));
+    if (!visible(h) || !t || t.length > 120) return false;
+    if (customHeads) return true;
+    if (titleRe.test(t)) return true;
+    // Step-name headers ("Creating file") must be expandable and outside the page chrome.
+    const expandable = h.tagName === 'SUMMARY' || h.hasAttribute('aria-expanded') || !!h.querySelector('[aria-expanded]');
+    let inChrome = false;
+    try { inChrome = !!h.closest(chrome); } catch (_) { inChrome = false; }
+    return expandable && !inChrome && stepRe.test(headTitle(h));
   });
   // Keep the outermost header when several nested elements match the same title.
   heads = heads.filter(h => !heads.some(o => o !== h && o.contains(h)));
+  // Expandable steps inside an expanded section (e.g. "Coding and executing" with its code) sit
+  // deeper in the DOM than the section headers: they belong to a section, they are not sections.
+  const depth = el => { let d = 0; for (let e = el; e; e = e.parentElement) d++; return d; };
+  const nestedIn = (h, o) => {
+    if (depth(o) >= depth(h) || !(o.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+    let anc = o.parentElement;
+    for (let k = 0; k < 4 && anc; k++, anc = anc.parentElement) if (anc.contains(h)) return true;
+    return false;
+  };
+  if (!customHeads) heads = heads.filter(h => !heads.some(o => o !== h && nestedIn(h, o)));
   const expandedState = h => {
     if (h.tagName === 'SUMMARY') return h.parentElement && h.parentElement.open ? 'true' : 'false';
     const own = h.getAttribute('aria-expanded');
@@ -331,16 +378,11 @@ SCREEN_SCRIPT = r"""
     return null;
   };
   const contentFor = h => {
-    if (h.tagName === 'SUMMARY' && h.parentElement) {
-      if (hasCode(h.parentElement)) return proseOf(h.parentElement, h);
-      const full = textOf(h.parentElement), title = textOf(h);
-      return full.startsWith(title) ? full.slice(title.length) : full;
-    }
-    const content = contentEl(h);
-    return hasCode(content) ? proseOf(content) : textOf(content);
+    if (h.tagName === 'SUMMARY' && h.parentElement) return proseOf(h.parentElement, h);
+    return proseOf(contentEl(h));
   };
   const blocks = heads.map((h, index) => {
-    const title = textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb]+$/, '').trim();
+    const title = headTitle(h);
     const expanded = expandedState(h);
     // Copilot collapses a block again when it finishes ("Reasoning" -> "Reasoned for 10s"):
     // expand once per title so the finished block's text stays readable.
@@ -348,10 +390,24 @@ SCREEN_SCRIPT = r"""
       h.dataset.roundtripExpanded = title;
       try { h.click(); } catch (_) { /* best effort */ }
     }
-    const lines = expanded === 'false' ? [] : contentFor(h).split(/\r?\n/)
-      .map(l => l.trim()).filter(Boolean).map(l => l.length > 500 ? l.slice(0, 500) + '\u2026' : l);
-    const active = !/^\s*(reasoned|thought)\b/i.test(title);
-    return {index, title, active, total: lines.length, lines: lines.slice(-tail)};
+    const raw = expanded === 'false' ? [] : contentFor(h).split(/\r?\n/)
+      .map(l => l.trim()).filter(Boolean).map(l => l.length > lineMax ? l.slice(0, lineMax) + '\u2026' : l);
+    const active = !doneRe.test(title);
+    // Split the section into steps at step-title lines ("Reasoning", "Creating file", ...).
+    const steps = [];
+    let step = null;
+    for (const line of raw) {
+      if (stepRe.test(line) || titleRe.test(line) && line.length <= 40 && !/[.,:;!?]/.test(line)) {
+        step = {title: line, lines: []}; steps.push(step); continue;
+      }
+      if (!step) { step = {title: active && !titleRe.test(title) ? title : 'Reasoning', lines: []}; steps.push(step); }
+      step.lines.push(line);
+    }
+    const kept = steps.filter(s => !omitRe.test(s.title))
+      .map(s => ({title: s.title, total: s.lines.length, lines: s.lines.slice(-tail)})).slice(-maxSteps);
+    const lines = [];
+    for (const s of steps) if (!omitRe.test(s.title)) lines.push(...s.lines);
+    return {index, title, active, total: lines.length, lines: lines.slice(-tail), steps: kept};
   });
   // Live intermediate answers: the latest assistant message's visible text, split at the
   // reasoning headers ("answer", "Reasoned for 38s", "answer", "Reasoned for 4s", "answer").
