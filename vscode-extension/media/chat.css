@@ -101,9 +101,11 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .task-row-title{min-width:0;overflow-wrap:anywhere}
 .task-row[data-state="active"] .task-row-title{color:var(--vscode-foreground)}
 .work-section{display:flex;flex-direction:column;min-width:0}
-.work-head{display:inline-grid;grid-template-columns:17px minmax(0,auto) 14px;align-items:center;gap:8px;align-self:flex-start;max-width:100%;padding:3px 5px;margin-left:-5px;background:transparent;color:var(--vscode-foreground);font-weight:500;text-align:left}
+.work-head{display:inline-grid;grid-template-columns:17px minmax(0,1fr) auto 14px;align-items:center;gap:8px;align-self:flex-start;max-width:100%;padding:3px 5px;margin-left:-5px;background:transparent;color:var(--vscode-foreground);font-weight:500;text-align:left}
 .work-head:hover,.thought-head:hover{background:var(--vscode-list-hoverBackground)}
-.work-icon{position:relative;width:15px;height:15px}.work-icon::before,.work-icon::after{content:'';position:absolute;width:8px;height:11px;border-radius:2px;background:currentColor;transform:rotate(8deg)}.work-icon::after{left:6px;top:2px;opacity:.55;transform:rotate(-8deg)}
+.work-state{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;color:var(--vscode-descriptionForeground)}
+.work-toggle-label{font-size:11px;color:var(--vscode-textLink-foreground);white-space:nowrap}
+.work-title.rotate{animation:activity-rotate .35s ease-out}
 .work-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .work-timeline{display:flex;flex-direction:column;margin:10px 0 0 7px;padding-left:20px}
 .work-timeline[hidden]{display:none}
@@ -125,7 +127,7 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .work-completed-state{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;color:var(--vscode-descriptionForeground);font-size:12px}
 .work-completed-title{min-width:0;overflow-wrap:anywhere}
 @keyframes reasoning-pulse{50%{opacity:.3}}
-@media (prefers-reduced-motion:reduce){.task-chevron,.work-chevron,.thought-chevron{transition:none}.task-state.active,.task-row-state.active{animation-duration:2s}}
+@media (prefers-reduced-motion:reduce){.task-chevron,.work-chevron,.thought-chevron{transition:none}.work-title.rotate{animation:none}.task-state.active,.task-row-state.active{animation-duration:2s}}
 /* Live text after a reasoning step remains inside that step's timeline entry. */
 .live-answer{padding:2px 0 2px 2px}
 .live-answer-text{margin:2px 0;max-height:15em;overflow:auto;font-family:var(--vscode-font-family);font-size:12px;line-height:1.5;user-select:text;-webkit-user-select:text;cursor:text}

@@ -123,7 +123,7 @@
     if(text.textContent!==next){text.textContent=next;text.classList.remove('rotate');void text.offsetWidth;text.classList.add('rotate');}
   }
   // Mirror Copilot's task card and working timeline without exposing code blocks.
-  let taskUserOpen=true, workUserOpen=true;
+  let taskUserOpen=true, workUserOpen=false;
   const thoughtUserOpen={};
   const CODING_STEP=/^(coding\b|executing code\b|running code\b)/i;
   const THOUGHT_STEP=/^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
@@ -197,10 +197,13 @@
     if(liveItems.has(key))return liveItems.get(key);
     const d=document.createElement('section');d.className='work-section';
     const head=document.createElement('button');head.type='button';head.className='work-head';
-    const icon=span('work-icon','');icon.setAttribute('aria-hidden','true');
+    const icon=span('work-state','');icon.setAttribute('aria-hidden','true');
     const chev=span('work-chevron','\u2304');chev.setAttribute('aria-hidden','true');
-    head.append(icon,span('work-title','Working through the steps'),chev);
-    const timeline=document.createElement('div');timeline.className='work-timeline';
+    const title=span('work-title','Working through the steps');
+    title.setAttribute('role','status');title.setAttribute('aria-live','polite');
+    head.append(icon,title,span('work-toggle-label','Show steps'),chev);
+    const timeline=document.createElement('div');timeline.className='work-timeline';timeline.id='workingSteps';
+    head.setAttribute('aria-controls',timeline.id);
     d.append(head,timeline);
     head.addEventListener('click',()=>{workUserOpen=!workUserOpen;renderReasoning(lastReasoning,lastAnswers);});
     liveItems.set(key,d);return d;
@@ -232,9 +235,29 @@
     const marker=span('work-completed-state','\u2713');marker.setAttribute('aria-hidden','true');
     item.append(marker,span('work-completed-title',step.title||'Completed step'));return item;
   }
+  // Keep the latest completed title until another step completes; use the active title initially.
+  function workSummary(blocks){
+    let completed='', current='';
+    for(const block of blocks){
+      const details=sectionSteps(block);
+      const finished=details.filter(detail=>detail.kind==='completed');
+      if(finished.length)completed=finished[finished.length-1].title||completed;
+      else if(!block.active)completed=(details.length?details[details.length-1].title:block.title)||completed;
+      if(block.active)current=(details.length?details[details.length-1].title:block.title)||current;
+    }
+    return completed||current||'Reasoning';
+  }
   function updateWork(blocks,byAfter,lastAfter){
     const d=workItem(), head=d.firstChild, timeline=d.lastChild;
-    head.setAttribute('aria-expanded',String(workUserOpen));head.title=workUserOpen?'Collapse working steps':'Expand working steps';
+    const running=activity.busy, marker=head.children[0], title=head.children[1];
+    marker.className='work-state'+(running?' spinner':'');marker.textContent=running?'':'\u2713';
+    const next='Working through the steps: '+workSummary(blocks);
+    if(title.textContent!==next){
+      title.textContent=next;title.classList.remove('rotate');void title.offsetWidth;title.classList.add('rotate');
+    }
+    title.title=next;
+    head.children[2].textContent=workUserOpen?'Hide steps':'Show steps';
+    head.setAttribute('aria-expanded',String(workUserOpen));head.title=workUserOpen?'Hide working steps':'Show working steps';
     timeline.hidden=!workUserOpen;timeline.replaceChildren();
     blocks.forEach((block,i)=>{
       const step=document.createElement('div');step.className='work-step'+(block.active?' active':' completed');
@@ -263,7 +286,7 @@
     answers=(Array.isArray(answers)?answers:[]).filter(a=>a&&typeof a.text==='string'&&a.text.trim());
     const task=lastTasks.length?lastTasks[lastTasks.length-1]:null, stopped=!!task&&/stop|cancel/i.test(task.state||'');
     if(stopped){blocks=[];answers=answers.filter(a=>(Number(a.after)||0)===0);}
-    if(!blocks.length&&!answers.length&&!task){box.hidden=true;list.replaceChildren();liveItems.clear();for(const k of Object.keys(thoughtUserOpen))delete thoughtUserOpen[k];return;}
+    if(!blocks.length&&!answers.length&&!task){workUserOpen=false;box.hidden=true;list.replaceChildren();liveItems.clear();for(const k of Object.keys(thoughtUserOpen))delete thoughtUserOpen[k];return;}
     box.hidden=false;
     const byAfter=new Map();
     for(const a of answers){const k=Math.max(0,Math.min(blocks.length,Number(a.after)||0));byAfter.set(k,(byAfter.has(k)?byAfter.get(k)+'\n\n':'')+a.text.trim());}
