@@ -2,7 +2,7 @@
 
 A sidebar prompt-and-response interface for the repository-wide `copilot_repo_roundtrip.py` workflow. This is **not** an inline coding assistant: each prompt sends a committed Git snapshot to Microsoft 365 Copilot Chat and applies the returned full ZIP to the current workspace repository.
 
-See the [repository README](../README.md) for command-line usage and archive replacement details.
+See the repository README (`../README.md` in the source checkout) for command-line usage and archive replacement details.
 
 ## Install / run
 
