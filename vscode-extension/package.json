@@ -125,7 +125,6 @@
     "extension.js",
     "media/**",
     "scripts/**",
-    "README.md",
     "package.json"
   ],
   "icon": "media/icon.png"
