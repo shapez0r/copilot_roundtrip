@@ -553,6 +553,32 @@ async (args) => {
   };
   markOutside();
   await verifySections();
+  // Open prose subsections too: expanding the outer card does not reveal text in
+  // nested Reasoning accordions. Never expand coding panels or read their code.
+  for (const h of heads) {
+    const title = headTitle(h);
+    if (expandedState(h) === 'false' && h.dataset.roundtripExpanded !== title) {
+      try {
+        h.click();
+        if (await waitFor(() => expandedState(h) === 'true', 600)) h.dataset.roundtripExpanded = title;
+      } catch (_) { /* retry on a later snapshot */ }
+    }
+    if (expandedState(h) === 'false') continue;
+    // A newly opened unlinked finished panel still needs ownership verification.
+    await verifySections();
+    const panel = h.tagName === 'SUMMARY' ? h.parentElement : contentEl(h);
+    if (!panel) continue;
+    const toggles = Array.from(panel.querySelectorAll('button, [role="button"], summary, [aria-expanded]'));
+    for (const step of toggles) {
+      if (step === h || step.contains(h) || !visible(step) || omitRe.test(headTitle(step))) continue;
+      if (expandedState(step) !== 'false') continue;
+      // Only short step headings qualify, not arbitrary controls inside a panel.
+      const name = headTitle(step);
+      if (!(stepRe.test(name) || titleRe.test(name) && name.length <= 40 && !/[.,:;!?]/.test(name))) continue;
+      try { step.click(); await waitFor(() => expandedState(step) === 'true', 600); }
+      catch (_) { /* retry on a later snapshot */ }
+    }
+  }
   // Finished sections are collapsed again once their steps were read, as in the web UI. Copilot only
   // shows the interim answers ("Now I'll rewrite the README...") above the "Reasoned for ..." headers
   // while those sections are collapsed; keeping them expanded hid every interim answer.
@@ -560,12 +586,6 @@ async (args) => {
   const blocks = heads.map((h, index) => {
     const title = headTitle(h);
     const expanded = expandedState(h);
-    // Copilot collapses a block again when it finishes ("Reasoning" -> "Reasoned for 10s"):
-    // expand once per title so the finished block's text stays readable.
-    if (expanded === 'false' && h.dataset.roundtripExpanded !== title) {
-      h.dataset.roundtripExpanded = title;
-      try { h.click(); } catch (_) { /* best effort */ }
-    }
     const raw = expanded === 'false' ? [] : contentFor(h).split(/\r?\n/)
       .map(l => l.trim()).filter(Boolean).map(l => l.length > lineMax ? l.slice(0, lineMax) + '\u2026' : l);
     const active = !doneRe.test(title);

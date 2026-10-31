@@ -183,29 +183,29 @@
     const chev=span('rt-chevron rt-step-chevron','\u203A');chev.setAttribute('aria-hidden','true');chev.hidden=true;
     top.append(icon,span('rt-step-title',''),chev);
     const text=document.createElement('div');text.className='rt-step-text';
-    // Only "Coding and executing" steps are collapsible (see setCodingStep).
-    const toggle=()=>{if(!el.dataset.codingKey)return;codingUserOpen[el.dataset.codingKey]=top.getAttribute('aria-expanded')!=='true';renderReasoning(lastReasoning,lastAnswers);};
+    // Each subsection can be expanded with a mouse or keyboard.
+    const toggle=()=>{if(!el.dataset.stepKey)return;codingUserOpen[el.dataset.stepKey]=top.getAttribute('aria-expanded')!=='true';renderReasoning(lastReasoning,lastAnswers);};
     top.addEventListener('click',toggle);
-    top.addEventListener('keydown',e=>{if(el.dataset.codingKey&&(e.key==='Enter'||e.key===' ')){e.preventDefault();toggle();}});
+    top.addEventListener('keydown',e=>{if(el.dataset.stepKey&&(e.key==='Enter'||e.key===' ')){e.preventDefault();toggle();}});
     el.append(top,text);list.append(el);return el;
   }
-  // Turns a step element into an empty collapsible "Coding and executing" step (key set), or back
-  // into a plain step (key null). Its code is never displayed, only the placeholder when expanded.
-  function setCodingStep(el,key){
+  // Configure a collapsible subsection; coding steps still show only their placeholder.
+  function setCodingStep(el,key,coding=true,lines=[]){
     const top=el.firstChild, chev=top.children[2], textEl=el.children[1];
-    el.classList.toggle('coding',!!key);
+    el.classList.toggle('coding',!!key&&coding);
+    el.classList.toggle('collapsible',!!key);
     chev.hidden=!key;
     if(!key){
-      delete el.dataset.codingKey;
+      delete el.dataset.stepKey;
       for(const a of ['role','tabindex','aria-expanded','title'])top.removeAttribute(a);
       return false;
     }
-    el.dataset.codingKey=key;
-    const open=!!codingUserOpen[key];
+    el.dataset.stepKey=key;
+    const open=key in codingUserOpen?codingUserOpen[key]:!coding;
     top.setAttribute('role','button');top.setAttribute('tabindex','0');
     top.setAttribute('aria-expanded',String(open));top.title=open?'Hide':'Show';
     textEl.hidden=!open;
-    setText(textEl,open?CODING_PLACEHOLDER:'');
+    setText(textEl,open?(coding?CODING_PLACEHOLDER:(lines.length?lines.join('\n'):'No reasoning text available.')):'');
     return true;
   }
   function setText(el,value){if(el.textContent!==value){el.textContent=value;el.scrollTop=el.scrollHeight;}}
@@ -265,11 +265,8 @@
         icon.className='rt-step-icon'+(current?' spinner':'');
         icon.textContent=current?'':'\u2713';
         el.firstChild.children[1].textContent=s.title||'Reasoning';
-        if(setCodingStep(el,s.coding?i+':'+k:null))return;
         const lines=Array.isArray(s.lines)?s.lines:[];
-        const textEl=el.children[1];
-        textEl.hidden=!lines.length;
-        setText(textEl,lines.join('\n'));
+        setCodingStep(el,i+':'+k,!!s.coding,lines);
       });
       while(stepsBox.children.length>steps.length)stepsBox.lastChild.remove();
       if(open&&!steps.length){const empty=stepItem(stepsBox,0);setCodingStep(empty,null);empty.firstChild.children[1].textContent=running?'Waiting for reasoning text...':'No reasoning text available.';empty.firstChild.children[0].textContent='';empty.children[1].hidden=true;}

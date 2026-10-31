@@ -126,9 +126,9 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .history-meta{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.7;font-size:11px}
 .history-delete{flex:0 0 auto;padding:0 8px;background:transparent;color:inherit}
 /* Empty, collapsible "Coding and executing" steps: no code is shown, only a placeholder when expanded. */
-.rt-step.coding .rt-step-head{cursor:pointer;align-self:flex-start;max-width:100%;border-radius:4px;padding:1px 4px 1px 0}
-.rt-step.coding .rt-step-head:hover{background:var(--vscode-list-hoverBackground)}
-.rt-step.coding .rt-step-head:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+.rt-step.collapsible .rt-step-head{cursor:pointer;align-self:flex-start;max-width:100%;border-radius:4px;padding:1px 4px 1px 0}
+.rt-step.collapsible .rt-step-head:hover{background:var(--vscode-list-hoverBackground)}
+.rt-step.collapsible .rt-step-head:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
 .rt-step-chevron{font-size:13px}
 .rt-step-chevron[hidden]{display:none}
 .rt-step-head[aria-expanded="true"] .rt-step-chevron{transform:rotate(90deg)}
