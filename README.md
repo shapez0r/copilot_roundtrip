@@ -6,7 +6,7 @@ Experimental Python/Playwright automation for submitting a local Git repository 
 
 ## Contents
 
-- `vscode-extension/scripts/copilot_repo_roundtrip.py` — command-line tool (`login` and `fix`). This is the single canonical copy of the automation; the VS Code extension in `vscode-extension/` uses the same file (see `vscode-extension/README.md`).
+- `vscode-extension/scripts/copilot_repo_roundtrip.py` — command-line tool (`login` and `fix`). This is the single canonical copy of the automation; the VS Code extension in `vscode-extension/` uses the same file (see the [extension README](vscode-extension/README.md)).
 
 ## Requirements
 
@@ -18,11 +18,11 @@ Experimental Python/Playwright automation for submitting a local Git repository 
 
 ## Install (Windows PowerShell)
 
-From the folder containing `vscode-extension/scripts/copilot_repo_roundtrip.py`:
+Run these commands from the repository root. Keep the virtual environment outside the repository so it does not make the working tree dirty or get removed during replacement:
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
+py -m venv "$env:USERPROFILE\.copilot-roundtrip-venv"
+& "$env:USERPROFILE\.copilot-roundtrip-venv\Scripts\Activate.ps1"
 python -m pip install --upgrade pip
 python -m pip install playwright
 python -m playwright install chromium
@@ -66,7 +66,7 @@ To continue a saved (non-temporary) Copilot chat, pass the `chat_url` printed by
 python .\vscode-extension\scripts\copilot_repo_roundtrip.py fix "Also update the tests" --repo "C:\path\to\repository" --chat-url "https://m365.cloud.microsoft/chat/..."
 ```
 
-The follow-up is sent in that same Copilot chat. Because Copilot's sandbox is erased between prompts, the current committed repository state is archived and attached again for every prompt, and the follow-up prompt tells Copilot that this archive supersedes earlier ones. Reasoning, answers and download links of earlier turns are ignored, so only the new response's ZIP is applied. If the saved chat cannot be reopened, the run fails instead of starting a different chat.
+The follow-up is sent in that same Copilot chat. The current committed repository state is archived and attached again for every prompt, so follow-ups do not depend on files remaining in Copilot's sandbox. The follow-up prompt tells Copilot that this archive supersedes earlier ones. Commit each accepted round-trip result before sending another prompt, otherwise the next archive still contains the previous `HEAD`. Reasoning, answers and download links of earlier turns are ignored, so only the new response's ZIP is applied. If the saved chat cannot be reopened, the run fails instead of starting a different chat.
 
 While a fix runs, press `Q` in the terminal to quit: once the prompt has been submitted, the script first clicks **Stop** on the Copilot response and only then closes the browser and exits (exit code 130) without changing the repository. The Stop button selector can be overridden with `COPILOT_STOP` (see [UI selector overrides](#ui-selector-overrides)).
 
@@ -76,8 +76,8 @@ The tool requires a clean working tree by default. `--allow-dirty` bypasses this
 
 1. Confirms the target is a Git worktree and checks cleanliness unless `--allow-dirty` is set.
 2. Runs `git archive --format=zip HEAD`, saving ZIP bytes under a timestamped `.zip.txt` name (for example `repo-20261024-191212.zip.txt`) for attachment.
-3. Opens Copilot Chat, enables **Temporary chat** (unless `--no-temporary-chat`), optionally selects the model, uploads the archive (followed by any `--attach` files), waits for an attachment chip and bounded progress checks (up to 180 seconds), then submits the repair request (retrying for up to 120 seconds).
-4. Lets the Copilot UI load for about 2.5 seconds after opening it (the browser is hidden by default), then waits for a downloadable response. The timeout only counts time with no new on-screen output (reasoning or response text) and restarts whenever output appears; if it expires, a screenshot and HTML diagnostics are saved. Reasoning sections (as in the Copilot web UI: header = current step name such as "Reasoning" or "Creating file" while running, "Reasoned for 8m 6s" when done) with their steps (latest 10 lines each), and the intermediate (live) answers written before, between and after them, are streamed live as `ROUNDTRIP_REASONING:` JSON lines on stderr. Code blocks are omitted; "Coding and executing" steps are sent as empty steps (title only, no code).
+3. Opens Copilot Chat, enables **Temporary chat** (unless `--no-temporary-chat`), selects the requested model, uploads the archive (followed by any `--attach` files), waits for an attachment chip and bounded progress checks (up to 180 seconds), then submits the repair request (retrying for up to 120 seconds).
+4. Lets the Copilot UI load for about 2.5 seconds after opening it (the browser is hidden by default), then waits for a downloadable response. The timeout only counts time with no new on-screen output (reasoning or response text) and restarts whenever output appears; if it expires, a screenshot and HTML diagnostics are written to the temporary run directory and removed when the run exits. They are not retained for later inspection, even with `--work-dir`. Reasoning sections (as in the Copilot web UI: header = current step name such as "Reasoning" or "Creating file" while running, "Reasoned for 8m 6s" when done) with their steps (latest 10 lines each), and the intermediate (live) answers written before, between and after them, are streamed live as `ROUNDTRIP_REASONING:` JSON lines on stderr. Code blocks are omitted; "Coding and executing" steps are sent as empty steps (title only, no code).
 5. Checks that the download is a ZIP with files, rejects traversal paths, `.git` entries and Unix symlinks, and refuses a byte-identical archive.
 6. Backs up all existing worktree files (including untracked files), clears the worktree except `.git`, then copies the complete extracted repository into place. On an apply failure, it restores the backup. It prints Git status, diff statistics, and the latest Copilot assistant chat response (when available) in the JSON output.
 
@@ -93,7 +93,7 @@ git diff
 git diff --check
 ```
 
-Temporary files are deleted automatically when the run finishes; use `--work-dir` to choose where they are created.
+Temporary files are deleted automatically when the run finishes; use `--work-dir` to choose their parent directory outside the target repository. This does not retain archives, diagnostics or backups after the run.
 
 ## Command-line options
 
@@ -134,6 +134,17 @@ $env:COPILOT_STOP='button[aria-label*="Stop" i]'
 ```
 
 The informational OneDrive upload notice is **not** treated as an upload-progress indicator. Upload readiness is determined from the attachment chip and actual progress elements, with a bounded wait.
+
+## Tests
+
+Run from `vscode-extension/`:
+
+```powershell
+npm test
+python -m unittest discover -s test -p "test_*.py"
+```
+
+The Node.js tests require Node.js and npm. Python browser tests require Playwright and Chromium; they are skipped when those dependencies are unavailable. `ROUNDTRIP_TEST_CHROMIUM` can point to an existing Chromium executable for the browser tests. These regression tests do not verify a live Copilot sign-in or round-trip.
 
 ## Security notes
 
