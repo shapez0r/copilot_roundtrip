@@ -122,12 +122,12 @@
     spinner.hidden=!running;
     if(text.textContent!==next){text.textContent=next;text.classList.remove('rotate');void text.offsetWidth;text.classList.add('rotate');}
   }
-  // Mirror Copilot's task card and working timeline without exposing code blocks.
+  // Mirror Copilot's current structured activity without exposing code blocks.
   let taskUserOpen=true, workUserOpen=false;
-  const thoughtUserOpen={};
-  const CODING_STEP=/^(coding\b|executing code\b|running code\b)/i;
+  const sectionState={}, thoughtUserOpen={};
+  const CODING_STEP=/^(coding\b|code execution\b|executing code\b|running code\b)/i;
   const THOUGHT_STEP=/^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
-  const CODING_PLACEHOLDER='Code and command output are hidden.';
+  const CODING_PLACEHOLDER='Coding and execution details are not needed here.';
   const liveItems=new Map();
   function sectionSteps(b){
     const steps=(Array.isArray(b.steps)?b.steps:[]).filter(s=>s&&typeof s==='object')
@@ -139,7 +139,7 @@
       });
     if(steps.length)return steps;
     const lines=Array.isArray(b.lines)?b.lines:[];
-    return lines.length?[{title:'Reasoning',lines,total:b.total||lines.length}]:[];
+    return lines.length?[{title:'Reasoning',kind:'thought',lines,total:b.total||lines.length}]:[];
   }
   function taskItem(){
     const key='task';
@@ -189,11 +189,75 @@
     if(liveItems.has(key))return liveItems.get(key);
     const d=document.createElement('div');d.className='live-answer';
     const pre=document.createElement('pre');pre.className='live-answer-text';
-    d.append(pre);
-    liveItems.set(key,d);return d;
+    d.append(pre);liveItems.set(key,d);return d;
   }
-  function workItem(){
-    const key='work';
+  function updateAnswer(after,text,lastAfter){
+    const el=answerItem(after), pre=el.firstChild;
+    el.classList.toggle('active',activity.busy&&after===lastAfter);
+    el.classList.toggle('interim',true);
+    if(pre.textContent!==text){pre.textContent=text;pre.scrollTop=pre.scrollHeight;}
+    return el;
+  }
+  function thoughtItem(blockIndex,stepIndex,step){
+    const key='thought:'+blockIndex+':'+stepIndex, coding=!!step.coding;
+    if(!liveItems.has(key)){
+      const item=document.createElement('div');item.className='thought'+(coding?' coding':'');
+      const toggle=document.createElement('button');toggle.type='button';toggle.className='thought-head';
+      const chev=span('thought-chevron','\u2304');chev.setAttribute('aria-hidden','true');
+      toggle.append(span('thought-dot',''),span('thought-title',''),chev);
+      const prose=document.createElement('div');prose.className='thought-prose';item.append(toggle,prose);
+      toggle.addEventListener('click',()=>{thoughtUserOpen[key]=!thoughtUserOpen[key];renderReasoning(lastReasoning,lastAnswers);});
+      liveItems.set(key,item);
+    }
+    const item=liveItems.get(key), toggle=item.firstChild, prose=item.lastChild;
+    item.className='thought'+(coding?' coding':'');
+    toggle.children[1].textContent=step.title||(coding?'Coding and executing':'Reasoning');
+    const open=thoughtUserOpen[key]===true;
+    toggle.setAttribute('aria-expanded',String(open));toggle.title=open?'Collapse details':'Expand details';
+    prose.hidden=!open;setText(prose,open?(coding?CODING_PLACEHOLDER:((step.lines||[]).join('\n')||'No details available.')):'');
+    return item;
+  }
+  function completedStepItem(blockIndex,stepIndex,step){
+    const key='complete:'+blockIndex+':'+stepIndex;
+    if(!liveItems.has(key)){
+      const item=document.createElement('div');item.className='work-completed';
+      const marker=span('work-completed-state','\u2713');marker.setAttribute('aria-hidden','true');
+      item.append(marker,span('work-completed-title',''));liveItems.set(key,item);
+    }
+    const item=liveItems.get(key);item.setAttribute('aria-label',(step.title||'Completed step')+': completed');
+    item.lastChild.textContent=step.title||'Completed step';return item;
+  }
+  function appendDetails(container,block,blockIndex){
+    container.replaceChildren();
+    sectionSteps(block).forEach((detail,k)=>container.append(detail.kind==='completed'?
+      completedStepItem(blockIndex,k,detail):thoughtItem(blockIndex,k,detail)));
+  }
+  function activitySection(index,block){
+    const key='section:'+index;
+    if(!liveItems.has(key)){
+      const d=document.createElement('section');d.className='activity-section';
+      const head=document.createElement('button');head.type='button';head.className='activity-section-head';
+      const marker=span('work-state','');marker.setAttribute('aria-hidden','true');
+      const chev=span('thought-chevron','\u2304');chev.setAttribute('aria-hidden','true');
+      head.append(marker,span('activity-section-title',''),span('activity-section-toggle','Show details'),chev);
+      const body=document.createElement('div');body.className='activity-section-details';d.append(head,body);
+      head.addEventListener('click',()=>{const state=sectionState[index];state.open=!state.open;renderReasoning(lastReasoning,lastAnswers);});
+      liveItems.set(key,d);
+    }
+    const d=liveItems.get(key), head=d.firstChild, body=d.lastChild;
+    const state=sectionState[index]||(sectionState[index]={open:!!block.active,active:!!block.active});
+    if(state.active&&!block.active)state.open=false;
+    state.active=!!block.active;
+    const running=activity.busy&&block.active;
+    head.children[0].className='work-state'+(running?' spinner':'');head.children[0].textContent=running?'':'\u2713';
+    head.children[1].textContent=block.title||'Reasoning';
+    head.children[2].textContent=state.open?'Hide details':'Show details';
+    head.setAttribute('aria-expanded',String(state.open));head.title=state.open?'Collapse activity':'Expand activity';
+    body.hidden=!state.open;appendDetails(body,block,index);
+    return d;
+  }
+  function workItem(start){
+    const key='work:'+start;
     if(liveItems.has(key))return liveItems.get(key);
     const d=document.createElement('section');d.className='work-section';
     const head=document.createElement('button');head.type='button';head.className='work-head';
@@ -203,38 +267,10 @@
     title.append(span('work-title-prefix','Working through the steps: '),span('work-title-step',''));
     title.setAttribute('role','status');title.setAttribute('aria-live','polite');
     head.append(icon,title,span('work-toggle-label','Show steps'),chev);
-    const timeline=document.createElement('div');timeline.className='work-timeline';timeline.id='workingSteps';
-    head.setAttribute('aria-controls',timeline.id);
-    d.append(head,timeline);
+    const timeline=document.createElement('div');timeline.className='work-timeline';timeline.id='workingSteps'+start;
+    head.setAttribute('aria-controls',timeline.id);d.append(head,timeline);
     head.addEventListener('click',()=>{workUserOpen=!workUserOpen;renderReasoning(lastReasoning,lastAnswers);});
     liveItems.set(key,d);return d;
-  }
-  function updateAnswer(after,text,lastAfter,insideWork=false){
-    const el=answerItem(after), pre=el.firstChild;
-    el.classList.toggle('active',activity.busy&&after===lastAfter);
-    el.classList.toggle('interim',insideWork);
-    el.classList.toggle('work-activity',insideWork);
-    if(pre.textContent!==text){pre.textContent=text;pre.scrollTop=pre.scrollHeight;}
-    return el;
-  }
-  function thoughtItem(blockIndex,stepIndex,step){
-    const key=blockIndex+':'+stepIndex, coding=!!step.coding;
-    const item=document.createElement('div');item.className='thought'+(coding?' coding':'');
-    const toggle=document.createElement('button');toggle.type='button';toggle.className='thought-head';
-    const chev=span('thought-chevron','\u2304');chev.setAttribute('aria-hidden','true');
-    toggle.append(span('thought-dot',''),span('thought-title',coding?(step.title||'Coding and executing'):'Thought process'),chev);
-    const prose=document.createElement('div');prose.className='thought-prose';
-    const open=key in thoughtUserOpen?thoughtUserOpen[key]:false;
-    toggle.setAttribute('aria-expanded',String(open));toggle.title=open?'Collapse details':'Expand details';
-    prose.hidden=!open;setText(prose,open?(coding?CODING_PLACEHOLDER:((step.lines||[]).join('\n')||'No details available.')):'');
-    toggle.addEventListener('click',()=>{thoughtUserOpen[key]=!open;renderReasoning(lastReasoning,lastAnswers);});
-    item.append(toggle,prose);return item;
-  }
-  function completedStepItem(step){
-    const item=document.createElement('div');item.className='work-completed';
-    item.setAttribute('aria-label',(step.title||'Completed step')+': completed');
-    const marker=span('work-completed-state','\u2713');marker.setAttribute('aria-hidden','true');
-    item.append(marker,span('work-completed-title',step.title||'Completed step'));return item;
   }
   // Keep the latest completed title until another step completes; use the active title initially.
   function workSummary(blocks){
@@ -248,26 +284,25 @@
     }
     return completed||current||'Reasoning';
   }
-  function updateWork(blocks,byAfter,lastAfter){
-    const d=workItem(), head=d.firstChild, timeline=d.lastChild;
+  function updateWork(blocks,start){
+    const d=workItem(start), head=d.firstChild, timeline=d.lastChild;
     const running=activity.busy&&blocks.some(block=>block.active), marker=head.children[0], title=head.children[1];
     marker.className='work-state'+(running?' spinner':'');marker.textContent=running?'':'\u2713';
     const next='Working through the steps: '+workSummary(blocks);
     if(title.textContent!==next){
       title.children[1].textContent=workSummary(blocks);title.classList.remove('rotate');void title.offsetWidth;title.classList.add('rotate');
     }
-    title.title=next;
-    head.children[2].textContent=workUserOpen?'Hide steps':'Show steps';
+    title.title=next;head.children[2].textContent=workUserOpen?'Hide steps':'Show steps';
     head.setAttribute('aria-expanded',String(workUserOpen));head.title=workUserOpen?'Hide working steps':'Show working steps';
     timeline.hidden=!workUserOpen;timeline.replaceChildren();
-    blocks.forEach((block,i)=>{
-      const active=activity.busy&&block.active;
+    blocks.forEach((block,offset)=>{
+      const i=start+offset, active=activity.busy&&block.active;
       const step=document.createElement('div');step.className='work-step'+(active?' active':' completed');
       const top=document.createElement('div');top.className='work-step-top';
       const marker=span('work-step-state'+(active?' spinner':''),active?'':'\u2713');marker.setAttribute('aria-hidden','true');
       top.append(marker,span('work-step-title',block.title||'Reasoning'));step.append(top);
-      sectionSteps(block).forEach((detail,k)=>step.append(detail.kind==='completed'?completedStepItem(detail):thoughtItem(i,k,detail)));
-      if(byAfter.has(i+1))step.append(updateAnswer(i+1,byAfter.get(i+1),lastAfter,true));
+      sectionSteps(block).forEach((detail,k)=>step.append(detail.kind==='completed'?
+        completedStepItem(i,k,detail):thoughtItem(i,k,detail)));
       timeline.append(step);
     });
     return d;
@@ -278,9 +313,7 @@
       const d=document.createElement('div');d.className='task-stopped-response';
       const pre=document.createElement('pre');pre.className='task-stopped-text';d.append(pre);liveItems.set(key,d);
     }
-    const d=liveItems.get(key);
-    setText(d.firstChild,task.response||'The task was cancelled before it could finish.');
-    return d;
+    const d=liveItems.get(key);setText(d.firstChild,task.response||'The task was cancelled before it could finish.');return d;
   }
   function renderReasoning(blocks,answers){
     const box=$('reasoning'), list=$('reasoningBlocks');
@@ -288,22 +321,31 @@
     answers=(Array.isArray(answers)?answers:[]).filter(a=>a&&typeof a.text==='string'&&a.text.trim());
     const task=lastTasks.length?lastTasks[lastTasks.length-1]:null, stopped=!!task&&/stop|cancel/i.test(task.state||'');
     if(stopped){blocks=[];answers=answers.filter(a=>(Number(a.after)||0)===0);}
-    if(!blocks.length&&!answers.length&&!task){workUserOpen=false;box.hidden=true;list.replaceChildren();liveItems.clear();for(const k of Object.keys(thoughtUserOpen))delete thoughtUserOpen[k];return;}
+    if(!blocks.length&&!answers.length&&!task){
+      workUserOpen=false;box.hidden=true;list.replaceChildren();liveItems.clear();
+      for(const state of [sectionState,thoughtUserOpen])for(const k of Object.keys(state))delete state[k];
+      return;
+    }
     box.hidden=false;
     const byAfter=new Map();
     for(const a of answers){const k=Math.max(0,Math.min(blocks.length,Number(a.after)||0));byAfter.set(k,(byAfter.has(k)?byAfter.get(k)+'\n\n':'')+a.text.trim());}
     const ordered=[], lastAfter=Math.max(-1,...byAfter.keys());
-    const pushAnswer=k=>{
-      if(!byAfter.has(k))return;
-      ordered.push(updateAnswer(k,byAfter.get(k),lastAfter,false));
-    };
+    const pushAnswer=k=>{if(byAfter.has(k))ordered.push(updateAnswer(k,byAfter.get(k),lastAfter));};
     pushAnswer(0);
     if(task)ordered.push(updateTask(task));
     if(stopped)ordered.push(stoppedItem(task));
-    else if(blocks.length)ordered.push(updateWork(blocks,byAfter,lastAfter));
-    // Drop items that disappeared, then place the rest in order without recreating them.
+    else for(let i=0;i<blocks.length;){
+      if(blocks[i].layout==='working'){
+        const start=i;i++;
+        while(i<blocks.length&&blocks[i].layout==='working'&&!byAfter.has(i))i++;
+        ordered.push(updateWork(blocks.slice(start,i),start));
+        pushAnswer(i);
+      }else{
+        ordered.push(activitySection(i,blocks[i]));i++;pushAnswer(i);
+      }
+    }
     const keep=new Set(ordered);
-    for(const [k,el] of liveItems) if(!keep.has(el)&&!ordered.some(parent=>parent.contains(el))){el.remove();liveItems.delete(k);}
+    for(const [k,el] of liveItems)if(!keep.has(el)&&!ordered.some(parent=>parent.contains(el))){el.remove();liveItems.delete(k);}
     ordered.forEach((el,k)=>{if(list.children[k]!==el)list.insertBefore(el,list.children[k]||null);});
     while(list.children.length>ordered.length)list.lastChild.remove();
   }

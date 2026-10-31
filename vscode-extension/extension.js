@@ -35,8 +35,8 @@ const REASONING_PREFIX = 'ROUNDTRIP_REASONING:';
 const QUIT_GRACE_MS = 30000;
 const REASONING_TAIL = 10;
 const ANSWER_MAX_CHARS = 4000;
-// Stream reasoning sections and interleaved answers; coding steps expose titles only.
-const OMIT_STEP = /^(coding\b|executing code\b|running code\b)/i;
+// Stream structured activity and interleaved answers; code-execution steps expose titles only.
+const OMIT_STEP = /^(coding\b|code execution\b|executing code\b|running code\b)/i;
 const THOUGHT_STEP = /^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
 function parseLiveLine(line) {
   if (!line.startsWith(REASONING_PREFIX)) return null;
@@ -56,6 +56,7 @@ function parseLiveLine(line) {
           return {title, kind, total, lines: stLines};
         });
       return {index: i, title: String(b.title || 'Reasoning'), active: b.active === true,
+        layout: b.layout === 'working' ? 'working' : 'section',
         total: Math.max(Number(b.total) || 0, lines.length), lines, steps};
     });
     const answers = (Array.isArray(value.answers) ? value.answers : [])

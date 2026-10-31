@@ -147,9 +147,12 @@ def merge_live(prev_blocks, prev_answers, blocks, answers, final=False):
             steps.append(item)
         block["steps"] = steps
         merged_blocks.append(block)
-    # Blocks that temporarily vanished from the screen are kept as well.
-    for old in prev_blocks[len(merged_blocks):]:
-        merged_blocks.append(dict(old, active=False))
+    # Keep temporarily missing blocks unless the UI replaced the activity container.
+    layout_replaced = bool(merged_blocks and prev_blocks and
+                           merged_blocks[0].get("layout") != prev_blocks[0].get("layout"))
+    if not layout_replaced:
+        for old in prev_blocks[len(merged_blocks):]:
+            merged_blocks.append(dict(old, active=False))
     if final:
         merged_blocks = [dict(block, active=False) for block in merged_blocks]
     texts = {}
@@ -347,8 +350,8 @@ async (args) => {
   // Match short step-name headers while a section is running.
   const stepRe = /^[A-Z][a-z]+ing(?:\s+(?:and\s+)?[a-z][a-z-]*){0,3}$/;
   const doneRe = /^\s*(reasoned|thought|worked)\s+for\b/i;
-  // "Coding and executing" steps only hold code and its output, which are not shown (empty steps).
-  const omitRe = /^(coding\b|executing code\b|running code\b)/i;
+  // Code-execution sections are represented by their title only.
+  const omitRe = /^(coding\b|code execution\b|executing code\b|running code\b)/i;
   const lineMax = 2000;
   const visible = el => !!el && el.getClientRects().length > 0;
   const textOf = el => (el && (el.innerText || el.textContent) || '').trim();
@@ -466,7 +469,7 @@ async (args) => {
     const expandable = h.tagName === 'SUMMARY' || h.hasAttribute('aria-expanded') || !!h.querySelector('[aria-expanded]');
     let inChrome = false;
     try { inChrome = !!h.closest(chrome); } catch (_) { inChrome = false; }
-    // GPT responses can expose activity as a standalone control without a task or timeline wrapper.
+    // Activity can be a standalone control without a task or timeline wrapper.
     return expandable && !inChrome && stepRe.test(headTitle(h)) &&
       (inWorkingSteps(h) || inCurrentAssistant(h));
   });
@@ -575,6 +578,11 @@ async (args) => {
     if (h.tagName === 'SUMMARY' && h.parentElement) return proseOf(h.parentElement, h);
     return proseOf(contentEl(h));
   };
+  const containsCode = h => {
+    const panel = h.tagName === 'SUMMARY' ? h.parentElement : contentEl(h);
+    return !!panel && Array.from(panel.querySelectorAll('pre, code, [class*="code-block" i], [class*="codeblock" i], [class*="code_block" i]'))
+      .some(isCode);
+  };
   // Plain labels qualify only when the adjacent panel actually contains working steps.
   heads = heads.filter(h => !plainHeads.has(h) || contentEl(h));
   markOutside();
@@ -634,9 +642,12 @@ async (args) => {
       const kind = titleRe.test(s.title) || s.lines.length ? 'thought' : 'completed';
       return {title: s.title, kind, total: s.lines.length, lines: s.lines.slice(-tail)};
     });
+    if (containsCode(h) && !kept.some(s => s.kind === 'coding'))
+      kept.push({title: 'Coding and executing', kind: 'coding', total: 0, lines: []});
     const lines = [];
     for (const s of steps) if (!omitRe.test(s.title)) lines.push(...s.lines);
-    return {index, title, active, total: lines.length, lines: lines.slice(-tail), steps: kept};
+    return {index, title, active, layout: inWorkingSteps(h) ? 'working' : 'section',
+      total: lines.length, lines: lines.slice(-tail), steps: kept};
   });
   // Collect current-turn answers from assistant messages or the enclosing turn, using the richer layout.
   const answers = [];
@@ -1750,8 +1761,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 if tasks != last_tasks:
                     last_tasks = tasks
                     last_activity = now
-                    if tasks:
-                        emit_status("task", task_status_message(tasks), tasks)
+                    emit_status("task", task_status_message(tasks) if tasks else "Copilot task card closed.", tasks)
                 now = time.monotonic()
                 running = response_is_running(page, sel)
                 if running:
@@ -1821,9 +1831,9 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
             # Download discovery starts only after Stop is gone; read the final response layout twice.
             emit_status("waiting", "Copilot response finished; downloadable repository found.")
             tasks = read_task_cards(page)
-            if tasks and tasks != last_tasks:
+            if tasks != last_tasks:
                 last_tasks = tasks
-                emit_status("task", task_status_message(tasks), tasks)
+                emit_status("task", task_status_message(tasks) if tasks else "Copilot task card closed.", tasks)
             for attempt in range(2):
                 pause(page, 1000)
                 _, blocks, answers = read_screen(page, sel, prompt)

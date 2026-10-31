@@ -34,9 +34,10 @@ function view() {
     '\nthis.render = renderReasoning; this.summary = workSummary;', context);
   context.update = blocks => { context.lastReasoning = blocks; context.render(blocks, []); };
   context.work = () => elements.reasoningBlocks.firstChild;
+  context.list = () => elements.reasoningBlocks;
   return context;
 }
-const block = (title, active = true, steps = []) => ({title, active, steps});
+const block = (title, active = true, steps = [], layout = 'working') => ({title, active, steps, layout});
 const done = title => ({title, kind: 'completed'});
 
 test('working steps start hidden with an accessible Show steps control and spinner', () => {
@@ -155,16 +156,54 @@ test('coding-only duration sections render without a task card or plan', () => {
   v.update([block('Reasoned for 12s', false, [
     {title: 'Coding and executing', kind: 'coding', lines: [], total: 0},
     {title: 'Coding and executing', kind: 'coding', lines: [], total: 0}
-  ])]);
-  const work = v.work();
-  assert.equal(work.className, 'work-section');
-  assert.equal(work.firstChild.children[0].className, 'work-state');
-  work.firstChild.events.click();
-  assert.equal(work.lastChild.hidden, false);
-  const step = work.lastChild.firstChild;
-  assert.equal(step.children.length, 3);
-  const coding = step.children[1];
+  ], 'section')]);
+  const section = v.work();
+  assert.equal(section.className, 'activity-section');
+  assert.equal(section.firstChild.children[1].textContent, 'Reasoned for 12s');
+  assert.equal(section.lastChild.hidden, true);
+  section.firstChild.events.click();
+  assert.equal(section.lastChild.hidden, false);
+  const coding = section.lastChild.firstChild;
   coding.firstChild.events.click();
-  assert.equal(v.work().lastChild.firstChild.children[1].lastChild.textContent,
-    'Code and command output are hidden.');
+  assert.equal(v.work().lastChild.firstChild.lastChild.textContent,
+    'Coding and execution details are not needed here.');
+});
+
+test('standalone activity mirrors its title, subsections, and completed fold', () => {
+  const v = view();
+  v.update([block('Reasoning', true, [
+    {title: 'Reasoning', kind: 'thought', lines: ['Inspecting files']},
+    {title: 'Creating a file', kind: 'thought', lines: ['Writing README.md']}
+  ], 'section')]);
+  const section = v.work();
+  assert.equal(section.className, 'activity-section');
+  assert.equal(section.firstChild.children[1].textContent, 'Reasoning');
+  assert.equal(section.lastChild.hidden, false);
+  assert.deepEqual(section.lastChild.children.map(item => item.firstChild.children[1].textContent),
+    ['Reasoning', 'Creating a file']);
+  v.update([block('Reasoned for 14s', false, [
+    {title: 'Reasoning', kind: 'thought', lines: ['Inspecting files']},
+    {title: 'Creating a file', kind: 'thought', lines: ['Writing README.md']}
+  ], 'section')]);
+  assert.equal(v.work().firstChild.children[1].textContent, 'Reasoned for 14s');
+  assert.equal(v.work().lastChild.hidden, true);
+});
+
+test('interim answers remain outside standalone and working containers', () => {
+  const v = view();
+  const generic = block('Reasoning', true, [], 'section');
+  v.render([generic], [{after: 1, text: 'Interim result.'}]);
+  assert.deepEqual(v.list().children.map(item => item.className), ['activity-section', 'live-answer']);
+  v.render([block('Inspecting'), block('Testing')], [{after: 1, text: 'Next update.'}]);
+  assert.deepEqual(v.list().children.map(item => item.className), ['work-section', 'live-answer', 'work-section']);
+});
+
+test('task cards render only while the UI reports a task', () => {
+  const v = view();
+  v.lastTasks = [{title: 'Update repository', state: 'In progress', active: true, steps: []}];
+  v.render([], []);
+  assert.equal(v.work().className, 'task-card');
+  v.lastTasks = [];
+  v.render([], [{after: 0, text: 'Continuing without a task.'}]);
+  assert.equal(v.work().className, 'live-answer');
 });

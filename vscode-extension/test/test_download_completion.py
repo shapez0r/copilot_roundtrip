@@ -35,6 +35,17 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(blocks[0]['steps'], block['steps'])
         self.assertEqual(answers, [{'after': 1, 'text': 'Done.'}])
 
+    def test_current_layout_replaces_the_previous_activity_layout(self):
+        previous = [
+            {'title': 'Reasoning', 'active': False, 'layout': 'working', 'steps': []},
+            {'title': 'Creating file', 'active': True, 'layout': 'working', 'steps': []},
+        ]
+        current = [{'title': 'Reasoned for 8s', 'active': False, 'layout': 'section', 'steps': []}]
+        blocks, _ = rt.merge_live(previous, [], current, [])
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]['layout'], 'section')
+        self.assertEqual(blocks[0]['title'], 'Reasoned for 8s')
+
     def test_zip_labels_without_filename(self):
         for label in ('Download the complete fixed repository ZIP', 'repo-fixed.zip'):
             self.assertRegex(label, rt.ZIP_NAME)
@@ -252,6 +263,7 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(rt.read_task_cards(self.page), [])
         _, blocks, answers = rt.read_screen(self.page, self.sel)
         self.assertEqual([b['title'] for b in blocks], ['Reasoned for 12s', 'Reasoned for 24s'])
+        self.assertEqual([b['layout'] for b in blocks], ['section', 'section'])
         self.assertEqual([len(b['steps']) for b in blocks], [2, 1])
         self.assertTrue(all(not b['active'] for b in blocks))
         self.assertTrue(all(s['kind'] == 'coding' and not s['lines']
@@ -325,6 +337,17 @@ class BrowserTests(unittest.TestCase):
         ])
         self.assertNotIn('secret()', str((blocks, answers)))
 
+    def test_unlabelled_code_in_activity_gets_a_coding_placeholder(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <details open><summary>Creating file</summary>
+            <p>Preparing the file.</p><pre>secret_code()</pre>
+          </details></article></main>''')
+        _, blocks, answers = rt.read_screen(self.page, self.sel)
+        self.assertEqual(blocks[0]['layout'], 'section')
+        self.assertEqual(blocks[0]['steps'][-1],
+                         {'title': 'Coding and executing', 'kind': 'coding', 'total': 0, 'lines': []})
+        self.assertNotIn('secret_code', str((blocks, answers)))
+
     def test_explicit_working_timeline_keeps_coding_steps(self):
         self.page.set_content('''<main><article data-message-author-role="assistant">
           <section><h2>Working through the steps</h2>
@@ -333,6 +356,7 @@ class BrowserTests(unittest.TestCase):
         _, blocks, _ = rt.read_screen(self.page, self.sel)
         self.assertEqual(len(blocks), 1)
         self.assertEqual(blocks[0]['title'], 'Coding and executing')
+        self.assertEqual(blocks[0]['layout'], 'working')
 
     def test_descriptive_zip_link_with_opaque_target(self):
         self.page.set_content('<a href="/artifact/123">Download the complete fixed repository ZIP</a>')
@@ -394,6 +418,7 @@ class BrowserTests(unittest.TestCase):
             <details open><summary>Thought process</summary><p>Preparing the tests.</p></details>
           </div></details></article></main>''')
         _, blocks, _ = rt.read_screen(self.page, self.sel)
+        self.assertEqual(blocks[0]['layout'], 'section')
         self.assertEqual([(step['title'], step['kind']) for step in blocks[0]['steps']], [
             ('Thought process', 'thought'),
             ('Reviewing Python comments', 'completed'),
