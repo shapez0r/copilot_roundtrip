@@ -162,13 +162,23 @@ def merge_live(prev_blocks, prev_answers, blocks, answers):
     texts = {}
     for answer in prev_answers or []:
         texts[answer["after"]] = answer["text"]
+    current = {}
     for answer in answers or []:
         text = strip_speaker_label(answer.get("text"))
         if not text:
             continue
         after = answer.get("after", 0)
-        if len(text) >= len(texts.get(after, "")):
+        old = texts.get(after, "")
+        current[after] = text
+        # The latest on-screen text wins (a short placeholder such as "Checking that now..." is replaced
+        # by the interim answer shown later at that position); only a truncated re-render of the
+        # same text keeps the longer text already streamed.
+        if not (len(text) < len(old) and text.lstrip("\u2026") in old):
             texts[after] = text
+    # Text that moved to another position on screen is not shown twice.
+    for after in list(texts):
+        if after not in current and any(texts[after] == t for a, t in current.items() if a != after):
+            del texts[after]
     merged_answers = [{"after": after, "text": texts[after]} for after in sorted(texts) if texts[after]]
     return merged_blocks, merged_answers
 
@@ -324,6 +334,15 @@ async (args) => {
   const lineMax = 2000, maxSteps = 30;
   const visible = el => !!el && el.getClientRects().length > 0;
   const textOf = el => (el && (el.innerText || el.textContent) || '').trim();
+  // Screen-reader-only text (visually hidden status/live regions such as a repeated "Checking that
+  // now...") is not shown in the web UI, so it is never streamed as an answer.
+  const srOnly = (el, cs) => {
+    if (cs.position !== 'absolute' && cs.position !== 'fixed') return false;
+    if (/rect\(\s*0(px)?[\s,]+0(px)?[\s,]+0(px)?[\s,]+0(px)?\s*\)/.test(cs.clip || '') ||
+        /inset\(\s*50%/.test(cs.clipPath || '')) return true;
+    const r = el.getBoundingClientRect();
+    return (r.width <= 1 || r.height <= 1) && /hidden|clip/.test(cs.overflow || '');
+  };
   // Code blocks (e.g. under "Coding and executing") are not streamed: only the step titles and
   // prose are shown, never the code itself. Inline `code` inside sentences is kept.
   const codeSel = 'pre, [class*="code-block" i], [class*="codeblock" i], [class*="code_block" i]';
@@ -348,7 +367,7 @@ async (args) => {
       if (node === exclude || isCode(node) || skipTags.test(node.tagName.toUpperCase()) ||
           node.getAttribute('aria-hidden') === 'true') return;
       const cs = getComputedStyle(node);
-      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      if (cs.display === 'none' || cs.visibility === 'hidden' || srOnly(node, cs)) return;
       if (node.tagName === 'BR') { out += '\n'; return; }
       // Buttons (e.g. a step's expander) are kept on their own line so step names stay separate.
       const block = !cs.display.startsWith('inline') && cs.display !== 'contents' ||
@@ -502,6 +521,10 @@ async (args) => {
   };
   markOutside();
   await verifySections();
+  // Finished sections are collapsed again once their steps were read, as in the web UI. Copilot only
+  // shows the interim answers ("Now I'll rewrite the README...") above the "Reasoned for ..." headers
+  // while those sections are collapsed; keeping them expanded hid every interim answer.
+  const collapseAfterRead = [];
   const blocks = heads.map((h, index) => {
     const title = headTitle(h);
     const expanded = expandedState(h);
@@ -514,6 +537,12 @@ async (args) => {
     const raw = expanded === 'false' ? [] : contentFor(h).split(/\r?\n/)
       .map(l => l.trim()).filter(Boolean).map(l => l.length > lineMax ? l.slice(0, lineMax) + '\u2026' : l);
     const active = !doneRe.test(title);
+    if (!active && expanded === 'true' && h.dataset.roundtripCollapsed !== title) {
+      const reads = (Number(h.dataset.roundtripReads) || 0) + 1;
+      h.dataset.roundtripReads = String(reads);
+      // Steps already streamed are kept by the script (merge_live) while the section is collapsed.
+      if (raw.length || reads >= 3) collapseAfterRead.push([h, title]);
+    }
     // Split the section into steps at step-title lines ("Reasoning", "Creating file", ...).
     const steps = [];
     let step = null;
@@ -566,7 +595,8 @@ async (args) => {
       breaks.set(h.tagName === 'SUMMARY' && h.parentElement ? h.parentElement : h, i);
       // Only verified section content is skipped (see contentEl), so a following interim answer
       // is never mistaken for the section's content.
-      if (h.tagName !== 'SUMMARY') {
+      // A collapsed finished section shows no content: what is visible next to it is interim text.
+      if (h.tagName !== 'SUMMARY' && !(expandedState(h) === 'false' && doneRe.test(headTitle(h)))) {
         const c = contentEl(h);
         if (c) skip.add(c);
       }
@@ -583,7 +613,7 @@ async (args) => {
         if (skip.has(el) || isCode(el) || ignored.test(el.tagName.toUpperCase()) || el.getAttribute('role') === 'button' ||
             el.getAttribute('aria-hidden') === 'true') return;
         const cs = getComputedStyle(el);
-        if (cs.display === 'none' || cs.visibility === 'hidden') return;
+        if (cs.display === 'none' || cs.visibility === 'hidden' || srOnly(el, cs)) return;
         if (el.tagName === 'BR') { cur.text += '\n'; return; }
         const block = !cs.display.startsWith('inline') && cs.display !== 'contents';
         const keep = pre || /^pre/.test(cs.whiteSpace);
@@ -602,7 +632,9 @@ async (args) => {
       const out = [];
       for (const seg of segments) {
         let text = seg.text.split('\n').map(l => l.replace(/[ \t\u00a0]+/g, ' ').trim())
-          .filter(l => !/^(copilot|you)\s+said\s*:?$/i.test(l)).join('\n')
+          .filter(l => !/^(copilot|you)\s+said\s*:?$/i.test(l))
+          // A status line rendered twice in a row ("Checking that now..." x2) is shown once.
+          .filter((l, k, all) => !l || k === 0 || l !== all[k - 1]).join('\n')
           .replace(/\n{2,}/g, '\n').trim();
         if (!text) continue;
         if (text.length > args.maxChars) text = '\u2026' + text.slice(-args.maxChars);
@@ -615,6 +647,10 @@ async (args) => {
     const fromRegion = region ? collect([region]) : [];
     answers.push(...(fromRegion.length > fromMessages.length ? fromRegion : fromMessages));
   } catch (_) { /* live answers are best effort */ }
+  for (const [h, title] of collapseAfterRead) {
+    h.dataset.roundtripCollapsed = title;
+    try { h.click(); } catch (_) { /* best effort */ }
+  }
   // Signature of on-screen text; elapsed-time counters and animated dots are ignored.
   const root = document.querySelector('main') || document.body;
   const text = textOf(root).replace(/\d+(\.\d+)?\s*(ms|s|sec|secs|seconds?|m|min|mins|minutes?)\b/gi, '')
@@ -1403,13 +1439,16 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 ctx.close()
                 raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s. Temporary diagnostics were removed with the run directory")
             # Final snapshot of the finished response, merged so nothing already shown is lost.
-            page.wait_for_timeout(1000)
-            _, blocks, answers = read_screen(page, sel, prompt)
-            if blocks is not None:
-                final_live = merge_live(live_blocks, live_answers, blocks, answers)
-                if final_live != (live_blocks, live_answers):
-                    live_blocks, live_answers = final_live
-                    emit_reasoning(live_blocks, live_answers)
+            # Read twice: the first read may collapse sections it just finished reading, the second
+            # sees the web UI layout with the interim answers between the collapsed sections.
+            for _attempt in range(2):
+                page.wait_for_timeout(1000)
+                _, blocks, answers = read_screen(page, sel, prompt)
+                if blocks is not None:
+                    final_live = merge_live(live_blocks, live_answers, blocks, answers)
+                    if final_live != (live_blocks, live_answers):
+                        live_blocks, live_answers = final_live
+                        emit_reasoning(live_blocks, live_answers)
             if track_chat:
                 current_url = conversation_url(page.url, args.url)
                 if current_url and current_url != reported_url:
