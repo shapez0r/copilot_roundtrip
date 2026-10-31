@@ -361,6 +361,7 @@
       if(m.type==='toggleHistory')setHistoryOpen($('historyPanel').hidden);
       if(m.type==='focusPrompt'&&!prompt.disabled)prompt.focus();
       if(m.type==='history'){messages.replaceChildren();m.items.forEach(item=>add(item));setHistoryOpen(!m.items.length);}
+    if(m.type==='repoState'){repoReady=!!m.ready;$('repoWarning').textContent=m.message||'';$('repoWarning').hidden=repoReady;updateSubmit();renderAttachments();}
     if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning,lastAnswers);updateSubmit();$('cancel').disabled=!m.value;$('cancel').hidden=!m.value;$('send').hidden=!!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;syncTemporary();$('newChat').disabled=m.value;renderHistory();renderAttachments();}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
@@ -371,6 +372,12 @@
     if(m.type==='reasoning'){lastReasoning=m.blocks||[];lastAnswers=m.answers||[];renderActivity();renderReasoning(lastReasoning,lastAnswers);}
     if(m.type==='attached'&&Array.isArray(m.items)){for(const it of m.items)addAttachment(it);}
   });
+  let repoReady=false;
+  function updateSubmit(){$('send').disabled=activity.busy||!repoReady;}
+  function checkRepo(){vscode.postMessage({type:'checkRepo'});}
+  window.addEventListener('focus',checkRepo);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkRepo();});
+  setInterval(()=>{if(!activity.busy)checkRepo();},3000);
     // Editable model combobox: pick a preset from the dropdown or type any provider/model.
     const modelInput=$('model'), modelList=$('modelList'), modelToggle=$('modelToggle'), modelCombo=$('modelCombo');
     const modelOptions=[...modelList.querySelectorAll('[role="option"]')];
@@ -482,7 +489,7 @@
   document.addEventListener('dragover',e=>e.preventDefault());
   document.addEventListener('drop',e=>{if(!form.contains(e.target))e.preventDefault();});
   $('attach').addEventListener('click',()=>vscode.postMessage({type:'pickAttachments'}));
-  form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked,temporaryChat:$('temporaryChat').checked,attachments:attachments.map(a=>a.kind==='path'?{kind:'path',path:a.path,name:a.name}:{kind:'data',name:a.name,data:a.data})});prompt.value='';resizePrompt();attachments=[];renderAttachments();});
+  form.addEventListener('submit',e=>{e.preventDefault();if(!repoReady||activity.busy||!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked,temporaryChat:$('temporaryChat').checked,attachments:attachments.map(a=>a.kind==='path'?{kind:'path',path:a.path,name:a.name}:{kind:'data',name:a.name,data:a.data})});prompt.value='';resizePrompt();attachments=[];renderAttachments();});
   // Enter runs the prompt exactly like clicking Modify repository; Shift+Enter inserts a new line.
   prompt.addEventListener('keydown',e=>{
     if(e.key!=='Enter'||e.shiftKey||e.altKey||e.isComposing||e.keyCode===229)return;

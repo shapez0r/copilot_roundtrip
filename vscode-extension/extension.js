@@ -341,8 +341,17 @@ class ChatProvider {
       if(m.type==='openDiff' && typeof m.repo==='string' && typeof m.file==='string') await this.openDiff(m.repo,m.file);
     });
     this.refresh();
+    this.checkRepo();
   }
   post(m) { if(this.view) this.view.webview.postMessage(m); }
+  async checkRepo() {
+    const id=++this.repoCheckId;
+    const state=await repositoryState(currentRepo());
+    if(id!==this.repoCheckId) return state;
+    this.repoReady=state.ready;
+    this.post({type:'repoState',...state});
+    return state;
+  }
   async copyText(text) {
     try { await vscode.env.clipboard.writeText(text); vscode.window.setStatusBarMessage('Copied to clipboard.',2000); }
     catch(e) { vscode.window.showErrorMessage('Could not copy to clipboard: '+String(e.message||e)); }
@@ -431,6 +440,9 @@ class ChatProvider {
     if(typeof prompt!=='string' || !prompt.trim()) { this.post({type:'error',text:'Enter a prompt first.'}); return; }
     const repo=currentRepo();
     if(!repo) { this.post({type:'error',text:'Open a local workspace folder first.'}); return; }
+    const state=await this.checkRepo();
+    if(!state.ready) { this.post({type:'repoState',...state}); return; }
+    if(this.busy) return;
     const cfg=config();
     cfg.model=typeof model==='string' ? model.trim() : '';
       if(!/^[^/\s]+\/[^/]+$/.test(cfg.model)) { this.updateProgress('error','Enter a model as provider/model (for example GPT/GPT-6).'); return; }
@@ -508,7 +520,7 @@ class ChatProvider {
     } finally {
       if(attachDir) { try { fs.rmSync(attachDir,{recursive:true,force:true}); } catch (_) { /* best effort */ } }
       clearTimeout(this.cancelTimer);this.cancelTimer=null;this.cancelRequested=false;
-      this.proc=null;this.busy=false;this.post({type:'busy',value:false});this.postChats();
+      this.proc=null;this.busy=false;this.post({type:'busy',value:false});this.postChats();this.checkRepo();
     }
   }
 }

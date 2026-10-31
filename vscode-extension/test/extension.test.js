@@ -59,3 +59,13 @@ test('standalone working activity replaces the compact waiting line', () => {
   assert.ok(source.includes("$('activityLine').hidden=!!(lastTasks.length||lastReasoning.length)&&!activity.login"));
   assert.ok(source.includes("lastAnswers=m.answers||[];renderActivity();renderReasoning"));
 });
+
+test('sidebar checks Git state and blocks submission before recording a prompt', () => {
+  const source = fsT.readFileSync(pathT.join(__dirname, '../extension.js'), 'utf8');
+  assert.match(source, /const state=await this\.checkRepo\(\);\s*if\(!state\.ready\)/);
+  assert.match(source, /this\.post\(\{type:'repoState',\.\.\.state\}\)/);
+  const webview = fsT.readFileSync(pathT.join(__dirname, '../media/chat.js'), 'utf8');
+  assert.match(webview, /\$\('send'\)\.disabled=activity\.busy\|\|!repoReady/);
+  assert.match(webview, /if\(!repoReady\|\|activity\.busy\|\|!prompt\.value\.trim\(\)\)return/);
+  assert.match(webview, /setInterval\(\(\)=>\{if\(!activity\.busy\)checkRepo\(\);\},3000\)/);
+});
