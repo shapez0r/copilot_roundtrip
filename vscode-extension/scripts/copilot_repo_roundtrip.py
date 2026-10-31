@@ -132,7 +132,7 @@ def merge_live(prev_blocks, prev_answers, blocks, answers, final=False):
         if old and not block.get("lines") and old.get("lines"):
             block["lines"] = list(old["lines"])
             block["total"] = max(int(old.get("total") or 0), len(old["lines"]))
-        # Steps ("Reasoning", "Creating file", ...) already seen are kept the same way.
+        # Retain streamed step details while their panels are collapsed.
         old_steps = (old or {}).get("steps") or []
         new_steps = block.get("steps") or []
         if len(new_steps) < len(old_steps):
@@ -672,8 +672,8 @@ async (args) => {
       if (el && !norm(textOf(el)).includes(snippet) && !el.querySelector('[data-roundtrip-prior-msg]') &&
           !el.closest('[data-roundtrip-prior-msg]')) region = el;
     }
-    let turnNodes = region ? found.filter(n => region.contains(n) || n.contains(region)) : [];
-    if (!turnNodes.length && found.length) turnNodes = [found[found.length - 1]];
+    // Prior-turn messages are marked before submission; keep every current response fragment.
+    const turnNodes = found;
     // Reasoning headers split the text; the content of expanded sections (their steps) is skipped.
     const breaks = new Map(), skip = new Set();
     heads.forEach((h, i) => {
@@ -729,7 +729,9 @@ async (args) => {
     };
     const fromMessages = turnNodes.length ? collect(turnNodes) : [];
     const fromRegion = region ? collect([region]) : [];
-    answers.push(...(fromRegion.length > fromMessages.length ? fromRegion : fromMessages));
+    // Equal segment counts can still omit interim prose outside assistant-message wrappers.
+    const textSize = segments => segments.reduce((size, segment) => size + norm(segment.text).length, 0);
+    answers.push(...(textSize(fromRegion) > textSize(fromMessages) ? fromRegion : fromMessages));
   } catch (_) { /* live answers are best effort */ }
   for (const [h, title] of collapseAfterRead) {
     h.dataset.roundtripCollapsed = title;

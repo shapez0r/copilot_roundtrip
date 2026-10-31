@@ -250,6 +250,51 @@ class BrowserTests(unittest.TestCase):
         self.addCleanup(self.page.close)
         self.sel = rt.selectors_from_env()
 
+    def test_interim_answer_in_separate_assistant_message_precedes_coding(self):
+        self.page.set_content('''<main>
+          <article data-roundtrip-prior-msg="1" data-message-author-role="assistant">
+            <p>Earlier answer.</p></article>
+          <article data-message-author-role="assistant">
+            <p>I'll add two standalone games while preserving the extension.</p></article>
+          <article data-message-author-role="assistant">
+            <details><summary>Coding and executing</summary><pre>secret()</pre></details>
+          </article></main>''')
+        _, blocks, answers = rt.read_screen(self.page, self.sel)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(answers, [{'after': 0, 'text':
+            "I'll add two standalone games while preserving the extension."}])
+        self.assertNotIn('Earlier answer', str(answers))
+        self.assertNotIn('secret()', str((blocks, answers)))
+
+    def test_interim_prose_outside_message_is_kept_when_segment_counts_match(self):
+        self.page.set_content('''<main><p>Requested repository change</p><section>
+          <p>I'll add two standalone games.</p>
+          <article data-message-author-role="assistant">
+            <p>Preserving the extension.</p>
+            <details><summary>Coding and executing</summary><pre>secret()</pre></details>
+          </article></section></main>''')
+        _, blocks, answers = rt.read_screen(self.page, self.sel, 'Requested repository change')
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(answers, [{'after': 0, 'text':
+            "I'll add two standalone games.\nPreserving the extension."}])
+        self.assertNotIn('Requested repository change', str(answers))
+
+    def test_split_current_messages_keep_interim_order_in_saved_chat(self):
+        self.page.set_content('''<main>
+          <article data-message-author-role="assistant" data-roundtrip-prior-msg="1">
+            <p>Earlier answer.</p></article>
+          <p>Requested repository change</p>
+          <article data-message-author-role="assistant"><p>Starting the games.</p></article>
+          <article data-message-author-role="assistant">
+            <details><summary>Coding and executing</summary><pre>secret()</pre></details>
+          </article>
+          <article data-message-author-role="assistant"><p>Games are ready.</p></article>
+          </main>''')
+        _, blocks, answers = rt.read_screen(self.page, self.sel, 'Requested repository change')
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(answers, [{'after': 0, 'text': 'Starting the games.'},
+                                   {'after': 1, 'text': 'Games are ready.'}])
+
     def test_plain_reasoned_headers_capture_coding_cards_without_tasks(self):
         self.page.set_content('''<main><article data-message-author-role="assistant">
           <p>I am checking the implementation.</p>

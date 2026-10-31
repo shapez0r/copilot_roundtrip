@@ -207,3 +207,22 @@ test('task cards render only while the UI reports a task', () => {
   v.render([], [{after: 0, text: 'Continuing without a task.'}]);
   assert.equal(v.work().className, 'live-answer');
 });
+
+test('introductory interim answer stays before standalone coding activity across updates', () => {
+  const v = view();
+  const intro = "I'll add two standalone games while preserving the extension.";
+  const answers = [{after: 0, text: intro}];
+  const coding = block('Coding and executing', true,
+    [{title: 'Coding and executing', kind: 'coding', lines: []}], 'section');
+  v.lastAnswers = answers;
+  v.lastReasoning = [coding];
+  v.render(v.lastReasoning, answers);
+  assert.deepEqual(v.list().children.map(item => item.className), ['live-answer', 'activity-section']);
+  assert.equal(v.list().firstChild.firstChild.textContent, intro);
+  v.list().lastChild.firstChild.events.click();
+  assert.equal(v.list().firstChild.firstChild.textContent, intro);
+  v.activity.busy = false;
+  v.render([{...coding, active: false}], answers);
+  assert.equal(v.list().firstChild.firstChild.textContent, intro);
+  assert.equal(v.list().lastChild.lastChild.hidden, true);
+});
