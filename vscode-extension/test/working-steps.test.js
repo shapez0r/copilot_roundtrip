@@ -107,9 +107,15 @@ test('summary keeps the fixed label bold and the changing step separate', () => 
   assert.match(css, /\.work-title-prefix\{font-weight:700\}/);
   assert.match(css, /\.work-title-step\{font-weight:400\}/);
 });
-test('active indicators use breathing diamonds and respect reduced motion', () => {
+test('active indicators share a smooth nine-dot grid and respect reduced motion', () => {
   const css = fs.readFileSync(path.join(__dirname, '../media/chat.css'), 'utf8');
-  assert.ok(!css.includes('activity-spin'));
-  assert.match(css, /animation:activity-breathe 2.4s ease-in-out infinite/);
-  assert.match(css, /@media \(prefers-reduced-motion:reduce\).*\.spinner::before,\.task-state.active::before,\.task-row-state.active::before\{animation:none/);
+  assert.ok(!css.includes('activity-breathe'));
+  assert.ok(!css.includes('rotate(45deg)'));
+  assert.match(css, /animation:activity-dots 2.4s ease-in-out infinite/);
+  const frames = css.match(/@keyframes activity-dots\{(.*)\}\n/)[1];
+  const shadows = [...frames.matchAll(/box-shadow:([^}]+)/g)].map(match => match[1]);
+  assert.equal(shadows.length, 9);
+  for (const shadow of shadows) assert.equal((shadow.match(/color-mix/g) || []).length, 9);
+  assert.equal(shadows[0], shadows.at(-1));
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\).*\.spinner::before,\.task-state.active::before,\.task-row-state.active::before\{animation:none\}/);
 });
