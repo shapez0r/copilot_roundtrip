@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import unittest
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'copilot_repo_roundtrip.py'
 spec = importlib.util.spec_from_file_location('roundtrip', SCRIPT)
@@ -47,11 +47,48 @@ class CompletionTests(unittest.TestCase):
         visible.is_visible.return_value = True
         locator.count.return_value = 2
         locator.nth.side_effect = lambda index: (hidden, visible)[index]
-        page.locator.return_value = locator
+        cards = Mock()
+        cards.count.return_value = 0
+        page.locator.side_effect = lambda selector: cards if selector == '[data-roundtrip-task-card]' else locator
+        for button in (hidden, visible):
+            button.evaluate.side_effect = lambda script: 'getComputedStyle' in script
         self.assertTrue(rt.response_is_running(page, rt.selectors_from_env()))
         visible.is_visible.return_value = False
         self.assertFalse(rt.response_is_running(page, rt.selectors_from_env()))
         self.assertIn('data-icon-name', rt.selectors_from_env()['stop'])
+
+    def test_task_card_is_hovered_and_takes_priority_over_composer(self):
+        page, cards, card, controls, button = (Mock() for _ in range(5))
+        page.locator.return_value = cards
+        cards.count.return_value = 1
+        cards.nth.return_value = card
+        card.is_visible.return_value = True
+        card.locator.return_value = controls
+        controls.count.return_value = 1
+        controls.nth.return_value = button
+        button.is_visible.return_value = True
+        with patch.object(rt, 'read_task_cards'), patch.object(rt, 'is_prior', return_value=False):
+            self.assertEqual(rt.visible_stop_buttons(page, rt.selectors_from_env()), [button])
+            card.hover.assert_called_once_with(timeout=1500)
+            button.is_visible.return_value = False
+            self.assertFalse(rt.response_is_running(page, rt.selectors_from_env()))
+            self.assertTrue(all(call.args == ('[data-roundtrip-task-card]',)
+                                for call in page.locator.call_args_list))
+
+    def test_cancel_clicks_the_same_hover_revealed_task_stop(self):
+        page, cards, card, controls, button = (Mock() for _ in range(5))
+        page.locator.return_value = cards
+        cards.count.return_value = 1
+        cards.nth.return_value = card
+        card.is_visible.return_value = True
+        card.locator.return_value = controls
+        controls.count.return_value = 1
+        controls.nth.return_value = button
+        button.is_visible.side_effect = [True, False]
+        with patch.object(rt, 'read_task_cards'), patch.object(rt, 'is_prior', return_value=False):
+            self.assertTrue(rt.stop_generation(page, rt.selectors_from_env()))
+        button.click.assert_called_once_with(timeout=3000)
+        self.assertEqual(card.hover.call_count, 2)
 
     def test_task_status_message_describes_visible_plan(self):
         tasks = [{'title': 'Add browser games', 'state': 'In progress', 'active': True,
@@ -253,6 +290,28 @@ class BrowserTests(unittest.TestCase):
                 self.assertTrue(rt.response_is_running(self.page, self.sel))
                 self.page.locator('button').evaluate('button => button.hidden = true')
                 self.assertFalse(rt.response_is_running(self.page, self.sel))
+
+    def test_hover_reveals_task_stop_for_detection_and_cancellation(self):
+        self.page.set_content('''<style>
+          #task button { opacity: 0; } #task:hover button { opacity: 1; }
+          </style><main><article data-message-author-role="assistant">
+          <details id="task" open><summary>Build repository <span>In progress</span></summary>
+          <ol><li aria-current="step">Test repository</li></ol>
+          <button aria-label="Stop task" onclick="this.remove()">Stop</button>
+          </details></article></main>''')
+        self.assertTrue(rt.response_is_running(self.page, self.sel))
+        self.assertTrue(rt.stop_generation(self.page, self.sel))
+        self.assertFalse(rt.response_is_running(self.page, self.sel))
+
+    def test_task_without_stop_does_not_use_composer_stop(self):
+        self.page.set_content('''<main><details open><summary>Build repository
+          <span>Completed</span></summary><ol><li>Test repository</li></ol></details>
+          <form><button aria-label="Stop responding">Stop</button></form></main>''')
+        self.assertFalse(rt.response_is_running(self.page, self.sel))
+
+    def test_reused_composer_control_is_not_excluded_by_prior_marker(self):
+        self.page.set_content('<form><button data-roundtrip-prior="1" aria-label="Stop responding">Stop</button></form>')
+        self.assertTrue(rt.response_is_running(self.page, self.sel))
 
     def test_prior_long_running_task_card_is_ignored(self):
         self.page.set_content('''<main><article data-roundtrip-prior-msg="1">

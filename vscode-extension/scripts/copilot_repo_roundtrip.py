@@ -265,16 +265,35 @@ def pause(page, ms):
 
 
 def visible_stop_buttons(page, sel):
-    "Return visible Stop controls from the composer or a task/plan card."
+    "Hover current task cards first; use page Stop controls only when no task card exists."
     try:
-        stop = page.locator(sel["stop"])
-        return [stop.nth(i) for i in range(stop.count()) if stop.nth(i).is_visible()]
+        read_task_cards(page)
+        cards = page.locator('[data-roundtrip-task-card]')
+        current = [cards.nth(i) for i in range(cards.count())
+                   if cards.nth(i).is_visible() and not is_prior(cards.nth(i))]
+        scopes = current[-1:] or [page]
+        buttons = []
+        for scope in scopes:
+            if current:
+                scope.hover(timeout=1500)
+            stop = scope.locator(sel["stop"])
+            for i in range(stop.count()):
+                button = stop.nth(i)
+                if button.is_visible() and button.evaluate("""el => {
+                    if (el.closest('[data-roundtrip-prior-msg]')) return false;
+                    for (let node = el; node; node = node.parentElement) {
+                        if (getComputedStyle(node).opacity === '0') return false;
+                    }
+                    return true;
+                }"""):
+                    buttons.append(button)
+        return buttons
     except Exception:
         return []
 
 
 def response_is_running(page, sel):
-    "Copilot is running exactly while a visible Stop control is available."
+    "Copilot is running while the task-card-first lookup exposes a Stop control."
     return bool(visible_stop_buttons(page, sel))
 
 
