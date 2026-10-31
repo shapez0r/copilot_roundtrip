@@ -361,7 +361,7 @@
       if(m.type==='toggleHistory')setHistoryOpen($('historyPanel').hidden);
       if(m.type==='focusPrompt'&&!prompt.disabled)prompt.focus();
       if(m.type==='history'){messages.replaceChildren();m.items.forEach(item=>add(item));setHistoryOpen(!m.items.length);}
-    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning,lastAnswers);$('send').disabled=m.value;$('cancel').disabled=!m.value;$('cancel').hidden=!m.value;$('send').hidden=!!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;syncTemporary();$('newChat').disabled=m.value;renderHistory();renderAttachments();}
+    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning,lastAnswers);updateSubmit();$('cancel').disabled=!m.value;$('cancel').hidden=!m.value;$('send').hidden=!!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;syncTemporary();$('newChat').disabled=m.value;renderHistory();renderAttachments();}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
       activity.message=last?last.message:'';renderActivity();

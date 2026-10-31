@@ -113,7 +113,7 @@ The extension in `vscode-extension/` provides a sidebar for repository-wide chan
 1. From `vscode-extension/`, run `npm run package` (requires access to `@vscode/vsce`) and install the generated `.vsix` with **Extensions: Install from VSIX...**. For development, launch an Extension Development Host using `code --extensionDevelopmentPath="<absolute path to vscode-extension>" "<absolute path to target repository>"`. No F5 launch configuration is included.
 2. Open a local Git repository in VS Code and select **Repo Round-Trip** in the activity bar. The active editor's workspace folder is used, or the first local workspace folder if none is active.
 3. Open **Chat options** beside Attach and Model, choose **Sign in**, authenticate in Chromium, then click **Finish sign in**. The extension installs Playwright and Chromium into a private Python environment in VS Code global storage on first use; initial setup requires internet access.
-4. Choose or type an available provider/model label (presets include `GPT/GPT-6`, `GPT/GPT-6.1 Sol`, and `Claude/Opus 5.5`). Enter a request and click **Modify repository**, or press Enter. Shift+Enter inserts a newline. The operation begins without a confirmation prompt.
+4. Choose or type an available provider/model label (presets include `GPT/GPT-6`, `GPT/GPT-6.1 Sol`, and `Claude/Opus 5.5`). Commit, stash, or discard all staged, unstaged, and untracked changes first. The sidebar disables **Modify repository** and Enter submission until Git status is clean, and checks again immediately before starting. Enter a request and click **Modify repository**, or press Enter. Shift+Enter inserts a newline. The operation begins without a confirmation prompt.
 5. Inspect the **Changes** summary and the actual diff in VS Code Source Control. Diagnostic output is available under **Output → Repo Round-Trip**.
 
 Use **Attach files...**, paste images, or drop files into the prompt area (hold Shift when dropping into the VS Code webview). Attachments are temporary context, not repository files. The sidebar streams visible response text, task plans, and activity; code-execution details are omitted. The active task card's Stop action and the composer Cancel control request cancellation before terminating the process if necessary.
@@ -123,7 +123,7 @@ Use **Attach files...**, paste images, or drop files into the prompt area (hold 
 - **New chat** starts a separate conversation. **History** lists saved chats for the current workspace and allows reopening or removing a history entry; removing it does not delete the Copilot conversation.
 - Temporary chat is on by default and is not saved. Turn it off before the first prompt to save the chat across VS Code restarts. This choice is fixed for that chat.
 - Saved follow-ups reopen the recorded Copilot chat URL and upload the current committed snapshot again. If the first run never recorded a URL, the next prompt starts a new Copilot conversation for that history entry.
-- Commit accepted changes before follow-ups. `allowDirty` does not include uncommitted changes in the uploaded snapshot.
+- Commit accepted changes before follow-ups. The sidebar requires a clean worktree even when the `allowDirty` setting is enabled; the CLI `--allow-dirty` option still archives only `HEAD`.
 
 ### Settings
 
@@ -136,7 +136,7 @@ All settings are under **Settings → Repo Round-Trip** with the `copilotRoundtr
 | `timeout` | `900` | Seconds without new Copilot output or task-card changes. |
 | `showBrowser` | `false` | Initial browser visibility for modification runs. |
 | `temporaryChat` | `true` | Initial Temporary chat choice for new chats. |
-| `allowDirty` | `false` | Allow dirty worktrees while still archiving `HEAD`. |
+| `allowDirty` | `false` | CLI compatibility setting; the sidebar always requires a clean worktree. |
 | `profilePath` | empty | Browser profile path; defaults to `~/.copilot-repo-browser`. |
 | `workDir` | empty | Parent directory for automatically deleted run files. |
 | `backupDir` | empty | Deprecated compatibility setting; backups remain temporary. |
