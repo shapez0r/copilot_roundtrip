@@ -16,7 +16,7 @@
     } else card.append(heading,text);
     if(Array.isArray(item.attachments)&&item.attachments.length){const att=document.createElement('div');att.className='message-attachments';att.textContent='Attached: '+item.attachments.join(', ');card.append(att);}
     if(showText) messages.append(card);
-    if(item.role==='assistant' && ('diffStat' in item || 'gitStatus' in item)) messages.append(renderChanges(item.diffStat),renderGitStatus(item.gitStatus));
+    if(item.role==='assistant' && ('diffStat' in item || 'gitStatus' in item)) messages.append(renderChanges(item.diffStat));
     $('conversation').scrollTop=$('conversation').scrollHeight;
   }
   // Webview clipboard access is unreliable in VS Code sidebars; the extension host writes the clipboard.
@@ -61,15 +61,7 @@
     if(e.clipboardData){e.clipboardData.setData('text/plain',value);e.preventDefault();}
     copySelection(value);
   });
-  // Separate "Changes" and "Git status" sections, styled like Execution activity.
-  function statusKind(code){
-    if(code==='??'||code.includes('A')) return {kind:'added',badge:code==='??'?'U':'A',label:code==='??'?'Untracked':'Added'};
-    if(code.includes('U')) return {kind:'deleted',badge:'!',label:'Conflict'};
-    if(code.includes('D')) return {kind:'deleted',badge:'D',label:'Deleted'};
-    if(code.includes('R')) return {kind:'modified',badge:'R',label:'Renamed'};
-    if(code.includes('C')) return {kind:'added',badge:'C',label:'Copied'};
-    return {kind:'modified',badge:'M',label:'Modified'};
-  }
+  // Render the Changes summary with file counts and compact diff bars.
   function makeRow(kind,badge,label,content,index){
     const row=document.createElement('div');row.className='result-row '+kind;row.style.animationDelay=Math.min(index,20)*40+'ms';
     row.title=label;
@@ -115,17 +107,6 @@
       parts.forEach((p,k)=>{const cls=/insertion/.test(p)?'sum-add':/deletion/.test(p)?'sum-del':'';foot.append(span(cls,p));if(k<parts.length-1)foot.append(document.createTextNode(', '));});
       s.append(foot);
     }
-    return s;
-  }
-  function renderGitStatus(gitStatus,repoPath){
-    const {s,list}=section('Git status','Git status');
-    const lines=(gitStatus||'').split(/\r?\n/).filter(l=>l.trim());
-    lines.forEach((line,i)=>{
-      const code=line.slice(0,2), file=line.slice(3)||line.trim();
-      const k=statusKind(code);
-      list.append(makeRow(k.kind,k.badge,k.label,[span('result-path',file),span('result-code',code.trim()||code)],i));
-    });
-    if(!lines.length){const row=makeRow('added','\u2713','Clean',[span('result-path','Working tree clean.')],0);list.append(row);}
     return s;
   }
   // Single rotating activity line: "<latest status>" with a spinner while work is active.

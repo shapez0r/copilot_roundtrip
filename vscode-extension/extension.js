@@ -110,7 +110,7 @@ function buildArgs(script, request, repo, cfg) {
   for (const file of cfg.attachments || []) args.push('--attach', file);
   return args;
 }
-// Map a path shown in the Changes or Git status sections to a repository-relative path.
+// Map a changed file path to a repository-relative path.
 function cleanGitPath(p) {
   let v=String(p||'').trim();
   if(v.includes(' -> ')) v=v.split(' -> ').pop().trim();

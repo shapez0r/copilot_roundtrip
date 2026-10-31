@@ -13,7 +13,7 @@ function render(item, streamed) {
   }
   const messages = element();
   const context = {document: {createElement: element}, messages,
-    $: () => ({}), copyText() {}, renderChanges: () => 'changes', renderGitStatus: () => 'status'};
+    $: () => ({}), copyText() {}, renderChanges: () => 'changes'};
   vm.createContext(context);
   vm.runInContext(add + '\nthis.add = add;', context);
   context.add(item, streamed);
@@ -21,7 +21,7 @@ function render(item, streamed) {
 }
 
 test('streamed assistant response has no duplicate card and retains change summaries', () => {
-  assert.deepEqual(render({role: 'assistant', text: 'Done', diffStat: '', gitStatus: ''}, true), ['changes', 'status']);
+  assert.deepEqual(render({role: 'assistant', text: 'Done', diffStat: '', gitStatus: ''}, true), ['changes']);
 });
 
 test('saved and non-streamed assistant responses retain text and Copy without a heading', () => {
@@ -39,4 +39,15 @@ test('user and error messages remain visible with streamed answers', () => {
     assert.equal(card.children[1].textContent, 'Message');
     assert.equal(card.children[0].textContent, role === 'user' ? 'You' : 'Error');
   }
+});
+
+
+test('saved assistant messages with Git status render only Changes', () => {
+  const items = render({role: 'assistant', text: 'Done', diffStat: '', gitStatus: ' M app.js'}, false);
+  assert.equal(items.length, 2);
+  assert.equal(items[1], 'changes');
+});
+
+test('status-only saved results retain the Changes summary without a status section', () => {
+  assert.deepEqual(render({role: 'assistant', text: 'Done', gitStatus: '?? new.txt'}, true), ['changes']);
 });
