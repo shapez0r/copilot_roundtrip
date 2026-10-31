@@ -39,6 +39,20 @@ class CompletionTests(unittest.TestCase):
             self.assertFalse(rt.download_retry_due(count, 100, 159))
             self.assertTrue(rt.download_retry_due(count, 100, 160))
 
+    def test_visible_stop_controls_define_running_state(self):
+        page = Mock()
+        locator = Mock()
+        hidden, visible = Mock(), Mock()
+        hidden.is_visible.return_value = False
+        visible.is_visible.return_value = True
+        locator.count.return_value = 2
+        locator.nth.side_effect = lambda index: (hidden, visible)[index]
+        page.locator.return_value = locator
+        self.assertTrue(rt.response_is_running(page, rt.selectors_from_env()))
+        visible.is_visible.return_value = False
+        self.assertFalse(rt.response_is_running(page, rt.selectors_from_env()))
+        self.assertIn('data-icon-name', rt.selectors_from_env()['stop'])
+
     def test_task_status_message_describes_visible_plan(self):
         tasks = [{'title': 'Add browser games', 'state': 'In progress', 'active': True,
                   'steps': [
@@ -49,18 +63,21 @@ class CompletionTests(unittest.TestCase):
                          'Copilot task "Add browser games" is in progress; 2 plan items visible.')
         self.assertEqual(rt.task_status_message([]), '')
 
-    def test_download_precedes_optional_reasoning_capture(self):
+    def test_download_search_is_gated_by_stop_control(self):
         tree = ast.parse(SCRIPT.read_text())
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run_roundtrip')
         loop = next(n for n in ast.walk(fn) if isinstance(n, ast.While) and ast.unparse(n.test) == 'downloaded is None')
         calls = {name: min(n.lineno for n in ast.walk(loop) if isinstance(n, ast.Call)
                           and isinstance(n.func, ast.Name) and n.func.id == name)
-                 for name in ('download_candidates', 'read_screen')}
+                 for name in ('response_is_running', 'download_candidates', 'read_screen')}
+        self.assertLess(calls['response_is_running'], calls['download_candidates'])
         self.assertLess(calls['download_candidates'], calls['read_screen'])
-        self.assertTrue(any(isinstance(n, ast.If) and ast.unparse(n.test) == 'downloaded is not None'
-                            and any(isinstance(b, ast.Break) for b in n.body)
-                            and calls['download_candidates'] < n.lineno < calls['read_screen']
-                            for n in loop.body))
+        gates = [n for n in loop.body if isinstance(n, ast.If) and ast.unparse(n.test) == 'response_finished']
+        self.assertEqual(len(gates), 1)
+        self.assertTrue(any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                            and n.func.id == 'download_candidates' for n in ast.walk(gates[0])))
+        self.assertEqual(sum(1 for n in ast.walk(loop) if isinstance(n, ast.Call)
+                             and isinstance(n.func, ast.Name) and n.func.id == 'download_candidates'), 1)
 
 
 class DownloadFlowTests(unittest.TestCase):
@@ -205,15 +222,13 @@ class BrowserTests(unittest.TestCase):
         self.assertTrue(rt.wait_for_response_end(self.page, self.sel, timeout_seconds=1))
 
     def test_long_running_task_card_is_expanded_and_reported(self):
-        self.page.set_content('''<main><article data-message-author-role="assistant">
+        self.page.set_content('''<main><form><article data-message-author-role="assistant">
           <details id="task"><summary><span>Add Beer and Dinosaur Browser Games</span>
             <span>In progress</span></summary><ol>
             <li aria-label="Completed">Extract and inspect the repository and its instructions</li>
             <li aria-current="step">Review documentation and comments, then test and verify the repository</li>
-          </ol></details></article></main>''')
-        tasks = rt.read_task_cards(self.page)
-        self.assertTrue(self.page.locator('#task').evaluate('e => e.open'))
-        self.assertEqual(tasks, [{
+          </ol></details></article></form></main>''')
+        expected = [{
             'title': 'Add Beer and Dinosaur Browser Games',
             'state': 'In progress',
             'active': True,
@@ -221,7 +236,23 @@ class BrowserTests(unittest.TestCase):
                 {'title': 'Extract and inspect the repository and its instructions', 'state': 'completed'},
                 {'title': 'Review documentation and comments, then test and verify the repository', 'state': 'active'},
             ],
-        }])
+        }]
+        self.assertEqual(rt.read_task_cards(self.page), expected)
+        self.assertTrue(self.page.locator('#task').evaluate('e => e.open'))
+        self.assertEqual(rt.read_task_cards(self.page), expected)
+        self.assertTrue(self.page.locator('#task').evaluate('e => e.open'))
+
+    def test_stop_control_in_composer_or_task_card_is_running_signal(self):
+        cases = (
+            '<form><button aria-label="Stop responding"><svg></svg></button></form>',
+            '<section><button><svg data-icon-name="Stop"></svg></button></section>',
+        )
+        for markup in cases:
+            with self.subTest(markup=markup):
+                self.page.set_content(markup)
+                self.assertTrue(rt.response_is_running(self.page, self.sel))
+                self.page.locator('button').evaluate('button => button.hidden = true')
+                self.assertFalse(rt.response_is_running(self.page, self.sel))
 
     def test_prior_long_running_task_card_is_ignored(self):
         self.page.set_content('''<main><article data-roundtrip-prior-msg="1">

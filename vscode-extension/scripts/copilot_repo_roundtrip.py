@@ -264,26 +264,32 @@ def pause(page, ms):
         page.wait_for_timeout(min(250, max(1, int(left * 1000))))
 
 
+def visible_stop_buttons(page, sel):
+    "Return visible Stop controls from the composer or a task/plan card."
+    try:
+        stop = page.locator(sel["stop"])
+        return [stop.nth(i) for i in range(stop.count()) if stop.nth(i).is_visible()]
+    except Exception:
+        return []
+
+
+def response_is_running(page, sel):
+    "Copilot is running exactly while a visible Stop control is available."
+    return bool(visible_stop_buttons(page, sel))
+
+
 def stop_generation(page, sel, timeout_seconds=15):
-    "Click Copilot's Stop button for the running response and wait until it is gone."
-    stop = page.locator(sel["stop"])
-
-    def visible_buttons():
-        try:
-            return [stop.nth(i) for i in range(stop.count()) if stop.nth(i).is_visible()]
-        except Exception:
-            return []
-
+    "Click Copilot's Stop control for the running response and wait until it is gone."
     started = time.monotonic()
     clicked, last_click = False, 0.0
     while time.monotonic() - started < timeout_seconds:
-        buttons = visible_buttons()
+        buttons = visible_stop_buttons(page, sel)
         now = time.monotonic()
         if not buttons:
             if clicked:
                 return True
-            # The Stop button can take a moment to replace Send right after submission.
-            if now - started >= 3:
+            # The Stop control can take a moment to replace Send after submission.
+            if now - started >= STOP_APPEAR_GRACE_SECONDS:
                 return False
         elif not clicked or now - last_click >= 3:
             try:
@@ -297,15 +303,11 @@ def stop_generation(page, sel, timeout_seconds=15):
 
 
 def wait_for_response_end(page, sel, timeout_seconds=60):
-    "Wait (bounded) until Copilot's Stop button is gone, i.e. the response has finished rendering."
-    stop = page.locator(sel["stop"])
+    "Wait (bounded) until Copilot's Stop control is gone."
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        try:
-            if not any(stop.nth(i).is_visible() for i in range(stop.count())):
-                return True
-        except Exception:
-            return False
+        if not response_is_running(page, sel):
+            return True
         pause(page, 500)
     return False
 
@@ -670,6 +672,9 @@ async () => {
   const prior = el => el.hasAttribute('data-roundtrip-prior') ||
     !!el.closest('[data-roundtrip-prior-msg]');
   const linesOf = el => String(el && el.innerText || '').split(/\r?\n/).map(norm).filter(Boolean);
+  const stateText = el => [el && el.innerText, el && el.textContent, el && el.getAttribute('aria-label'),
+    el && el.getAttribute('title'), el && el.getAttribute('data-state'), el && el.getAttribute('data-status')]
+    .map(norm).find(value => stateRe.test(value)) || '';
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const stateOf = el => {
     const nodes = [el, ...Array.from(el.querySelectorAll('*'))];
@@ -685,10 +690,13 @@ async () => {
     return 'unknown';
   };
   const planOf = (card, title, state, lines) => {
-    let items = Array.from(card.querySelectorAll('li')).filter(visible).map(el => ({title: norm(el.innerText), state: stateOf(el)}))
-      .filter(item => item.title);
+    let rows = Array.from(card.querySelectorAll('li, [role="listitem"], [aria-current="step"], [data-state], [data-status]'))
+      .filter(el => visible(el) && !prior(el));
+    rows = rows.filter(el => !rows.some(parent => parent !== el && parent.contains(el)));
+    let items = rows.map(el => ({title: norm(el.innerText || el.textContent), state: stateOf(el)}))
+      .filter(item => item.title && !stateRe.test(item.title));
     if (!items.length) items = lines.map(line => norm(line.replace(title, '').replace(state, '')))
-      .filter(line => line && !stateRe.test(line) && !/^(show more|working through the steps|thought process)$/i.test(line))
+      .filter(line => line && !stateRe.test(line) && !/^(show more|working through the steps|thought process|stop|cancel)$/i.test(line))
       .map(itemTitle => ({title: itemTitle, state: 'unknown'}));
     items = items.slice(0, 20);
     const activeIndex = items.findIndex(item => item.state === 'active');
@@ -699,22 +707,23 @@ async () => {
       /^in progress$/i.test(state) ? index < inferredActive ? 'completed' : index === inferredActive ? 'active' : 'pending' :
       /^(completed?|done)$/i.test(state) ? 'completed' : 'pending'}));
   };
-  const statusNodes = Array.from(document.querySelectorAll('span, p, div, [role="status"]'))
-    .filter(el => visible(el) && !prior(el) && stateRe.test(norm(el.textContent)) &&
-      !Array.from(el.children).some(child => stateRe.test(norm(child.textContent))));
+  const statusNodes = Array.from(document.querySelectorAll('span, p, div, button, [role="status"], [role="button"], [aria-label], [data-state], [data-status]'))
+    .filter(el => visible(el) && !prior(el) && stateText(el) &&
+      !Array.from(el.children).some(child => stateText(child)));
   const tasks = [];
   const seen = new Set();
   for (const statusNode of statusNodes) {
-    const state = norm(statusNode.textContent);
+    const state = stateText(statusNode);
     let card = null, fallback = null;
-    for (let el = statusNode.parentElement, depth = 0; el && depth < 8; el = el.parentElement, depth++) {
+    for (let el = statusNode.parentElement, depth = 0; el && depth < 10; el = el.parentElement, depth++) {
       if (prior(el) || /^(MAIN|BODY|HTML)$/.test(el.tagName)) break;
-      if (el.closest('form, nav, header, footer, [role="dialog"], [role="menu"]')) break;
+      if (el.matches('form, nav, header, footer, [role="dialog"], [role="menu"]')) break;
       const lines = linesOf(el), text = norm(el.innerText);
       if (!text || text === state || text.length > 4000 || lines.length > 30) continue;
       const hasControl = !!el.querySelector('button, summary, [role="button"], [aria-expanded]');
-      if (hasControl && !fallback) fallback = el;
-      if (hasControl && (lines.length >= 3 || el.querySelector('li'))) { card = el; break; }
+      const hasPlan = !!el.querySelector('li, [role="listitem"], [aria-current="step"], [data-state], [data-status]');
+      if ((hasControl || hasPlan) && !fallback) fallback = el;
+      if ((hasControl || hasPlan) && (lines.length >= 3 || hasPlan)) { card = el; break; }
     }
     card = card || fallback;
     if (!card || seen.has(card)) continue;
@@ -725,7 +734,7 @@ async () => {
     for (const node of titleNodes) {
       const text = norm(node.textContent);
       if (visible(node) && text && text.length <= 200 && !stateRe.test(text) && !node.contains(statusNode) &&
-          (node.compareDocumentPosition(statusNode) & Node.DOCUMENT_POSITION_FOLLOWING)) title = text;
+          (node.compareDocumentPosition(statusNode) & Node.DOCUMENT_POSITION_FOLLOWING)) { title = text; break; }
     }
     if (!title) {
       const stateIndex = lines.findIndex(line => stateRe.test(line));
@@ -736,9 +745,9 @@ async () => {
       }
     }
     title = title || lines.find(line => !stateRe.test(line)) || 'Copilot task';
-    const collapsed = Array.from(card.querySelectorAll('button[aria-expanded="false"], [role="button"][aria-expanded="false"], summary'))
-      .filter(visible);
-    if (collapsed.length === 1) {
+    const collapsed = Array.from(card.querySelectorAll('details:not([open]) > summary, button[aria-expanded="false"], [role="button"][aria-expanded="false"]'))
+      .filter(el => visible(el) && !prior(el));
+    if (collapsed.length) {
       try { collapsed[0].click(); await wait(200); lines = linesOf(card); } catch (_) { /* retry later */ }
     }
     if (lines.length < 3) {
@@ -952,9 +961,14 @@ def selectors_from_env():
         "send": os.getenv("COPILOT_SEND", 'button[aria-label*="Send" i], button[data-testid*="send" i]'),
         "download": os.getenv("COPILOT_DOWNLOAD", 'a[download], a[href*="download" i], button:has-text("Download")'),
         "model_button": os.getenv("COPILOT_MODEL_BUTTON", 'button[aria-label*="model" i], button[aria-haspopup="menu"]:has-text("Auto")'),
-        # Stop button shown while Copilot generates a response (clicked on Q / Cancel before quitting).
+        # A visible Stop control, in the composer or task card, is the response-running signal.
         "stop": os.getenv("COPILOT_STOP", 'button[aria-label*="Stop" i]:not([aria-label*="temporary" i]), '
-                          'button[title*="Stop" i]:not([title*="temporary" i]), button[data-testid*="stop" i]'),
+                          '[role="button"][aria-label*="Stop" i]:not([aria-label*="temporary" i]), '
+                          'button[title*="Stop" i]:not([title*="temporary" i]), '
+                          '[role="button"][title*="Stop" i]:not([title*="temporary" i]), '
+                          'button[data-testid*="stop" i], [role="button"][data-testid*="stop" i], '
+                          'button:has([data-icon-name*="stop" i]), [role="button"]:has([data-icon-name*="stop" i]), '
+                          'button:text-is("Stop"), [role="button"]:text-is("Stop")'),
         "temporary_chat": os.getenv("COPILOT_TEMPORARY_CHAT", 'button[aria-label*="temporary" i], [role="button"][aria-label*="temporary" i], '
                                     'button[title*="temporary" i], button[data-testid*="temporary" i]'),
         # Optional override for reasoning headers; default detects "Reasoning"/"Reasoned for Ns" toggles.
@@ -1332,6 +1346,8 @@ ZIP_NAME = re.compile(r"\bzip\b(?!\.txt)", re.I)
 # A link that did not yield a file (e.g. it was rendered before the file was ready) is retried.
 DOWNLOAD_RETRY_SECONDS = 10
 DOWNLOAD_MAX_BACKOFF = 6
+STOP_APPEAR_GRACE_SECONDS = 3
+STOP_GONE_STABILITY_SECONDS = 1
 
 
 def download_retry_due(count, last, now):
@@ -1645,6 +1661,8 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
             attempts = {}
             upload_names = [source_txt.name] + [a.name for a in attachments]
             last_update = started
+            stop_seen = False
+            stop_absent_since = None
             while downloaded is None:
                 raise_if_quit()
                 now = time.monotonic()
@@ -1662,24 +1680,36 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                     last_activity = now
                     if tasks:
                         emit_status("task", task_status_message(tasks), tasks)
-                for node, href, key in download_candidates(page, sel, upload_names):
-                    if href and href in prior_keys:
-                        continue
-                    count, last = attempts.get(key, (0, 0.0))
-                    if not download_retry_due(count, last, now):
-                        continue
-                    attempts[key] = (count + 1, now)
-                    # Fetch targets without navigation; click JavaScript-handled links as a fallback.
-                    downloaded = fetch_download(ctx, page, href, work) if href else None
-                    if downloaded is None:
-                        try:
-                            downloaded = click_download(ctx, page, node, work)
-                        except QuitRequested:
-                            raise
-                        except Exception:
-                            downloaded = None
-                    if downloaded is not None:
-                        break
+                now = time.monotonic()
+                running = response_is_running(page, sel)
+                if running:
+                    stop_seen = True
+                    stop_absent_since = None
+                elif stop_absent_since is None:
+                    stop_absent_since = now
+                response_finished = (not running and stop_absent_since is not None and
+                                     now - stop_absent_since >= STOP_GONE_STABILITY_SECONDS and
+                                     (stop_seen or now - started >= STOP_APPEAR_GRACE_SECONDS))
+                # Do not inspect result links until the UI no longer offers Stop.
+                if response_finished:
+                    for node, href, key in download_candidates(page, sel, upload_names):
+                        if href and href in prior_keys:
+                            continue
+                        count, last = attempts.get(key, (0, 0.0))
+                        if not download_retry_due(count, last, now):
+                            continue
+                        attempts[key] = (count + 1, now)
+                        # Fetch targets without navigation; click JavaScript-handled links as a fallback.
+                        downloaded = fetch_download(ctx, page, href, work) if href else None
+                        if downloaded is None:
+                            try:
+                                downloaded = click_download(ctx, page, node, work)
+                            except QuitRequested:
+                                raise
+                            except Exception:
+                                downloaded = None
+                        if downloaded is not None:
+                            break
                 # Check downloads before optional reasoning capture.
                 if downloaded is not None:
                     break
@@ -1716,9 +1746,8 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 task_note = " " + task_status_message(last_tasks) if last_tasks else ""
                 raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s."
                                  f"{task_note} Temporary diagnostics were removed with the run directory")
-            # Wait for response completion, then read twice to capture the final collapsed-section layout.
-            emit_status("waiting", "Download ready; waiting for Copilot to finish its response...")
-            wait_for_response_end(page, sel)
+            # Download discovery starts only after Stop is gone; read the final response layout twice.
+            emit_status("waiting", "Copilot response finished; downloadable repository found.")
             tasks = read_task_cards(page)
             if tasks and tasks != last_tasks:
                 last_tasks = tasks
