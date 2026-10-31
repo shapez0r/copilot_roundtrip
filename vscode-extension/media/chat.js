@@ -13,7 +13,8 @@
       copy.setAttribute('aria-label','Copy Copilot response');
       copy.addEventListener('click',()=>{copyText(item.text||'');copy.textContent='Copied';setTimeout(()=>{copy.textContent='Copy';},1500);});
       head.append(copy);card.append(head,text);
-    } else card.append(heading,text);
+    } else if(item.role==='cancelled')card.append(text);
+    else card.append(heading,text);
     if(Array.isArray(item.attachments)&&item.attachments.length){const att=document.createElement('div');att.className='message-attachments';att.textContent='Attached: '+item.attachments.join(', ');card.append(att);}
     if(showText) messages.append(card);
     if(item.role==='assistant' && ('diffStat' in item || 'gitStatus' in item)) messages.append(renderChanges(item.diffStat));
@@ -121,7 +122,7 @@
     spinner.hidden=!running;
     if(text.textContent!==next){text.textContent=next;text.classList.remove('rotate');void text.offsetWidth;text.classList.add('rotate');}
   }
-  // Mirror Copilot's task card and expandable reasoning timeline without exposing code blocks.
+  // Mirror Copilot's task card and working timeline without exposing code blocks.
   let taskUserOpen=true, workUserOpen=true;
   const thoughtUserOpen={};
   const CODING_STEP=/^(coding\b|executing code\b|running code\b)/i;
@@ -138,25 +139,36 @@
     const key='task';
     if(liveItems.has(key))return liveItems.get(key);
     const d=document.createElement('section');d.className='task-card';
-    const head=document.createElement('button');head.type='button';head.className='task-head';
+    const head=document.createElement('div');head.className='task-head';
+    const toggle=document.createElement('button');toggle.type='button';toggle.className='task-toggle';
     const titleBox=document.createElement('span');titleBox.className='task-heading';
     const title=span('task-title',''), status=span('task-status','');titleBox.append(title,status);
     const chev=span('task-chevron','\u2303');chev.setAttribute('aria-hidden','true');
-    head.append(span('task-state',''),titleBox,chev);
+    toggle.append(span('task-state',''),titleBox,chev);
+    const stop=document.createElement('button');stop.type='button';stop.className='task-stop';stop.title='Stop task';stop.setAttribute('aria-label','Stop task');
+    stop.append(span('task-stop-icon',''));head.append(toggle,stop);
     const plan=document.createElement('div');plan.className='task-plan';
     d.append(head,plan);
-    head.addEventListener('click',()=>{taskUserOpen=!taskUserOpen;renderReasoning(lastReasoning,lastAnswers);});
+    toggle.addEventListener('click',()=>{if(toggle.disabled)return;taskUserOpen=!taskUserOpen;renderReasoning(lastReasoning,lastAnswers);});
+    stop.addEventListener('click',()=>{stop.disabled=true;vscode.postMessage({type:'cancel'});});
     liveItems.set(key,d);return d;
   }
   function taskState(value){return /^(completed|active|pending|failed)$/.test(String(value||'').toLowerCase())?String(value).toLowerCase():'pending';}
   function updateTask(task){
-    const d=taskItem(), head=d.firstChild, plan=d.lastChild;
-    const state=task.active?'active':/fail/i.test(task.state||'')?'failed':/complete|done/i.test(task.state||'')?'completed':'pending';
-    const marker=head.children[0];marker.className='task-state '+state;marker.textContent=state==='completed'?'\u2713':'';
-    head.children[1].children[0].textContent=task.title||'Copilot task';
-    head.children[1].children[1].textContent=task.state||'In progress';
-    head.setAttribute('aria-expanded',String(taskUserOpen));head.title=taskUserOpen?'Collapse task plan':'Expand task plan';
-    plan.hidden=!taskUserOpen;plan.replaceChildren();
+    const d=taskItem(), head=d.firstChild, toggle=head.firstChild, stop=head.lastChild, plan=d.lastChild;
+    const stopped=/stop|cancel/i.test(task.state||'');
+    const state=stopped?'stopped':task.active?'active':/fail/i.test(task.state||'')?'failed':/complete|done/i.test(task.state||'')?'completed':'pending';
+    const marker=toggle.children[0];marker.className='task-state '+state;marker.textContent=state==='completed'?'\u2713':state==='stopped'?'\u00d7':'';
+    toggle.children[1].children[0].textContent=task.title||'Copilot task';
+    toggle.children[1].children[1].textContent=stopped?'Task stopped':(task.state||'In progress');
+    const expandable=!stopped&&Array.isArray(task.steps)&&task.steps.length>0;
+    toggle.disabled=!expandable;toggle.setAttribute('aria-expanded',String(expandable&&taskUserOpen));
+    toggle.title=expandable?(taskUserOpen?'Collapse task plan':'Expand task plan'):'';
+    toggle.children[2].hidden=!expandable;
+    const canStop=activity.busy&&task.active&&!stopped;
+    stop.hidden=!canStop;stop.disabled=!canStop;
+    d.classList.toggle('running',canStop);d.classList.toggle('stopped',stopped);
+    plan.hidden=!expandable||!taskUserOpen;plan.replaceChildren();
     for(const item of Array.isArray(task.steps)?task.steps:[]){
       const row=document.createElement('div');row.className='task-row';
       const itemState=taskState(item.state), icon=span('task-row-state '+itemState,itemState==='completed'?'\u2713':'');
@@ -187,20 +199,28 @@
     head.addEventListener('click',()=>{workUserOpen=!workUserOpen;renderReasoning(lastReasoning,lastAnswers);});
     liveItems.set(key,d);return d;
   }
+  function updateAnswer(after,text,lastAfter,insideWork=false){
+    const el=answerItem(after), pre=el.firstChild;
+    el.classList.toggle('active',activity.busy&&after===lastAfter);
+    el.classList.toggle('interim',insideWork);
+    el.classList.toggle('work-activity',insideWork);
+    if(pre.textContent!==text){pre.textContent=text;pre.scrollTop=pre.scrollHeight;}
+    return el;
+  }
   function thoughtItem(blockIndex,stepIndex,step){
     const key=blockIndex+':'+stepIndex, coding=!!step.coding;
     const item=document.createElement('div');item.className='thought'+(coding?' coding':'');
     const toggle=document.createElement('button');toggle.type='button';toggle.className='thought-head';
     const chev=span('thought-chevron','\u2304');chev.setAttribute('aria-hidden','true');
-    toggle.append(span('thought-dot',''),span('thought-title',step.title||'Thought process'),chev);
+    toggle.append(span('thought-dot',''),span('thought-title',coding?(step.title||'Coding and executing'):'Thought process'),chev);
     const prose=document.createElement('div');prose.className='thought-prose';
-    const open=key in thoughtUserOpen?thoughtUserOpen[key]:!coding;
+    const open=key in thoughtUserOpen?thoughtUserOpen[key]:false;
     toggle.setAttribute('aria-expanded',String(open));toggle.title=open?'Collapse details':'Expand details';
     prose.hidden=!open;setText(prose,open?(coding?CODING_PLACEHOLDER:((step.lines||[]).join('\n')||'No details available.')):'');
     toggle.addEventListener('click',()=>{thoughtUserOpen[key]=!open;renderReasoning(lastReasoning,lastAnswers);});
     item.append(toggle,prose);return item;
   }
-  function updateWork(blocks){
+  function updateWork(blocks,byAfter,lastAfter){
     const d=workItem(), head=d.firstChild, timeline=d.lastChild;
     head.setAttribute('aria-expanded',String(workUserOpen));head.title=workUserOpen?'Collapse working steps':'Expand working steps';
     timeline.hidden=!workUserOpen;timeline.replaceChildren();
@@ -210,15 +230,27 @@
       const marker=span('work-step-state'+(block.active?' spinner':''),block.active?'':'\u2713');marker.setAttribute('aria-hidden','true');
       top.append(marker,span('work-step-title',block.title||'Reasoning'));step.append(top);
       sectionSteps(block).forEach((detail,k)=>step.append(thoughtItem(i,k,detail)));
+      if(byAfter.has(i+1))step.append(updateAnswer(i+1,byAfter.get(i+1),lastAfter,true));
       timeline.append(step);
     });
+    return d;
+  }
+  function stoppedItem(task){
+    const key='stopped';
+    if(!liveItems.has(key)){
+      const d=document.createElement('div');d.className='task-stopped-response';
+      const pre=document.createElement('pre');pre.className='task-stopped-text';d.append(pre);liveItems.set(key,d);
+    }
+    const d=liveItems.get(key);
+    setText(d.firstChild,task.response||'The task was cancelled before it could finish.');
     return d;
   }
   function renderReasoning(blocks,answers){
     const box=$('reasoning'), list=$('reasoningBlocks');
     blocks=Array.isArray(blocks)?blocks:[];
     answers=(Array.isArray(answers)?answers:[]).filter(a=>a&&typeof a.text==='string'&&a.text.trim());
-    const task=lastTasks.length?lastTasks[lastTasks.length-1]:null;
+    const task=lastTasks.length?lastTasks[lastTasks.length-1]:null, stopped=!!task&&/stop|cancel/i.test(task.state||'');
+    if(stopped){blocks=[];answers=answers.filter(a=>(Number(a.after)||0)===0);}
     if(!blocks.length&&!answers.length&&!task){box.hidden=true;list.replaceChildren();liveItems.clear();for(const k of Object.keys(thoughtUserOpen))delete thoughtUserOpen[k];return;}
     box.hidden=false;
     const byAfter=new Map();
@@ -226,21 +258,15 @@
     const ordered=[], lastAfter=Math.max(-1,...byAfter.keys());
     const pushAnswer=k=>{
       if(!byAfter.has(k))return;
-      const el=answerItem(k), pre=el.firstChild, text=byAfter.get(k);
-      // The newest answer while the run is busy is still streaming.
-      el.classList.toggle('active',activity.busy&&k===lastAfter&&k===blocks.length);
-      // Keep interim answers fully visible while the timeline updates.
-      el.classList.toggle('interim',k<blocks.length);
-      if(pre.textContent!==text){pre.textContent=text;pre.scrollTop=pre.scrollHeight;}
-      ordered.push(el);
+      ordered.push(updateAnswer(k,byAfter.get(k),lastAfter,false));
     };
     pushAnswer(0);
     if(task)ordered.push(updateTask(task));
-    if(blocks.length)ordered.push(updateWork(blocks));
-    for(let i=1;i<=blocks.length;i++)pushAnswer(i);
+    if(stopped)ordered.push(stoppedItem(task));
+    else if(blocks.length)ordered.push(updateWork(blocks,byAfter,lastAfter));
     // Drop items that disappeared, then place the rest in order without recreating them.
     const keep=new Set(ordered);
-    for(const [k,el] of liveItems) if(!keep.has(el)){el.remove();liveItems.delete(k);}
+    for(const [k,el] of liveItems) if(!keep.has(el)&&!ordered.some(parent=>parent.contains(el))){el.remove();liveItems.delete(k);}
     ordered.forEach((el,k)=>{if(list.children[k]!==el)list.insertBefore(el,list.children[k]||null);});
     while(list.children.length>ordered.length)list.lastChild.remove();
   }

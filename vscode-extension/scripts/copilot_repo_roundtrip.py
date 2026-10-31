@@ -387,7 +387,7 @@ async (args) => {
   let heads = customHeads || Array.from(document.querySelectorAll('button, [role="button"], summary, [aria-expanded]'));
   const headTitle = h => textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb\u2304\u2335\u02c5\u25be\u25b8]+$/, '').trim();
   const chrome = 'form, nav, header, footer, [role="toolbar"], [role="menu"], [role="menubar"], [role="dialog"], [role="tablist"]';
-  // Elements of earlier turns (marked before this prompt was sent) belong to previous answers.
+  // Exclude marked prior-turn elements from the current response.
   const prior = el => el.hasAttribute('data-roundtrip-prior') ||
     !!(el.parentElement && el.parentElement.closest('[data-roundtrip-prior-msg]'));
   heads = heads.filter(h => {
@@ -668,7 +668,7 @@ TASK_SCRIPT = r"""
 async () => {
   const visible = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
   const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
-  const stateRe = /^(in progress|completed?|done|failed|cancell?ed)$/i;
+  const stateRe = /^(in progress|completed?|done|failed|cancell?ed|task stopped|stopped)$/i;
   const prior = el => el.hasAttribute('data-roundtrip-prior') ||
     !!el.closest('[data-roundtrip-prior-msg]');
   const linesOf = el => String(el && el.innerText || '').split(/\r?\n/).map(norm).filter(Boolean);

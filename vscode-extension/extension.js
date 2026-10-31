@@ -20,11 +20,13 @@ function parseStatusLine(line) {
     const value = JSON.parse(line.slice(STATUS_PREFIX.length));
     if (typeof value.message !== 'string' || typeof value.stage !== 'string') return null;
     const status = {stage:value.stage,message:value.message};
-    if (Array.isArray(value.tasks)) status.tasks=value.tasks.filter(task=>task&&typeof task==='object').map(task=>({
-      title:String(task.title||'Copilot task'),state:String(task.state||'In progress'),active:task.active===true||/^in progress$/i.test(String(task.state||'')),
-      steps:(Array.isArray(task.steps)?task.steps:[]).filter(step=>step&&typeof step==='object'&&String(step.title||'').trim())
-        .map(step=>({title:String(step.title).trim(),state:/^(completed|active|pending|failed)$/i.test(String(step.state||''))?String(step.state).toLowerCase():'pending'}))
-    }));
+    if (Array.isArray(value.tasks)) status.tasks=value.tasks.filter(task=>task&&typeof task==='object').map(task=>{
+      const parsed={title:String(task.title||'Copilot task'),state:String(task.state||'In progress'),active:task.active===true||/^in progress$/i.test(String(task.state||'')),
+        steps:(Array.isArray(task.steps)?task.steps:[]).filter(step=>step&&typeof step==='object'&&String(step.title||'').trim())
+          .map(step=>({title:String(step.title).trim(),state:/^(completed|active|pending|failed)$/i.test(String(step.state||''))?String(step.state).toLowerCase():'pending'}))};
+      if(typeof task.response==='string'&&task.response.trim())parsed.response=task.response.trim();
+      return parsed;
+    });
     return status;
   } catch (_) { return null; }
 }
@@ -339,7 +341,7 @@ class ChatProvider {
     this.statusHistory.push({stage, message});
     if (this.statusHistory.length > 100) this.statusHistory.shift();
     this.post({type:'progressHistory', items:this.statusHistory});
-    if(Array.isArray(tasks)){this.tasks=tasks;this.post({type:'tasks',items:this.tasks});}
+    if(Array.isArray(tasks)&&!this.cancelRequested){this.tasks=tasks;this.post({type:'tasks',items:this.tasks});}
   }
   updateReasoning(live) {
     this.reasoning = {blocks: live.blocks || [], answers: live.answers || []};
@@ -373,11 +375,21 @@ class ChatProvider {
     else this.post({type:'error',text:'Dropped item is not a local file.'});
   }
   finishLogin() { if(this.loginProc && this.loginProc.stdin.writable) { this.updateProgress('login','Finishing browser sign-in...'); this.loginProc.stdin.write('\n'); } }
+  // Keep the stopped task visible while the Python process exits.
+  stopCurrentTask(message='The task was cancelled before it could finish.') {
+    if(!this.tasks.length)return false;
+    const last=this.tasks[this.tasks.length-1];
+    this.tasks=[...this.tasks.slice(0,-1),{...last,state:'Task stopped',active:false,steps:[],response:message}];
+    this.reasoning={blocks:[],answers:(this.reasoning.answers||[]).filter(answer=>(Number(answer.after)||0)===0)};
+    this.post({type:'tasks',items:this.tasks});this.post({type:'reasoning',blocks:[],answers:this.reasoning.answers});
+    return true;
+  }
   // Cancel clicks Stop before exiting; kill only after the grace period.
   cancel() {
     if(!this.busy || this.cancelRequested) return;
     this.cancelRequested=true;
     this.updateProgress('cancelled','Stopping the Copilot response, then quitting...');
+    this.stopCurrentTask();
     if(this.proc) this.requestQuit(this.proc);
   }
   requestQuit(child) {
@@ -456,11 +468,14 @@ class ChatProvider {
       this.updateProgress('completed','Completed. Review the Git diff.');
       vscode.window.showInformationMessage('Repository round-trip completed. Review your changes.');
     } catch(e) {
-      const msg=String(e.message||e);
-      this.history.push(userItem,{role:'error',text:msg});
-      if(chat){chat.messages.push(savedMessage({role:'error',text:msg}));chat.updated=Date.now();await this.saveChats();}
-      this.post({type:'message',item:{role:'error',text:msg}});
-      this.updateProgress('failed',msg);
+      const stopped=cancelled||this.cancelRequested||/^Run cancelled\.?$/i.test(String(e.message||e));
+      const msg=stopped?'The task was cancelled before it could finish.':String(e.message||e);
+      const item={role:stopped?'cancelled':'error',text:msg};
+      const shownInTask=stopped&&this.stopCurrentTask(msg);
+      this.history.push(userItem,item);
+      if(chat){chat.messages.push(savedMessage(item));chat.updated=Date.now();await this.saveChats();}
+      if(!shownInTask)this.post({type:'message',item});
+      this.updateProgress(stopped?'cancelled':'failed',msg);
     } finally {
       if(attachDir) { try { fs.rmSync(attachDir,{recursive:true,force:true}); } catch (_) { /* best effort */ } }
       clearTimeout(this.cancelTimer);this.cancelTimer=null;this.cancelRequested=false;

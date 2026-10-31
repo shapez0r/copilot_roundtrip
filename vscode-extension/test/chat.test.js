@@ -41,6 +41,12 @@ test('user and error messages remain visible with streamed answers', () => {
   }
 });
 
+test('cancelled tasks use plain response text without an error heading', () => {
+  const [card] = render({role: 'cancelled', text: 'The task was cancelled before it could finish.'}, true);
+  assert.equal(card.children.length, 1);
+  assert.equal(card.children[0].textContent, 'The task was cancelled before it could finish.');
+});
+
 
 test('saved assistant messages with Git status render only Changes', () => {
   const items = render({role: 'assistant', text: 'Done', diffStat: '', gitStatus: ' M app.js'}, false);

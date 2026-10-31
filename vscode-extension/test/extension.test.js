@@ -3,6 +3,7 @@ const test=require('node:test');const assert=require('node:assert/strict');const
 const {parseStatusLine}=require('../extension');
 test('structured status is parsed',()=>assert.deepEqual(parseStatusLine('ROUNDTRIP_STATUS:{"stage":"uploading","message":"Uploading..."}'),{stage:'uploading',message:'Uploading...'}));
 test('task status preserves the structured plan',()=>assert.deepEqual(parseStatusLine('ROUNDTRIP_STATUS:'+JSON.stringify({stage:'task',message:'Working',tasks:[{title:'Create games',state:'In progress',active:true,steps:[{title:'Inspect files',state:'completed'},{title:'Build UI',state:'active'},{title:'Test',state:'pending'}]}]})),{stage:'task',message:'Working',tasks:[{title:'Create games',state:'In progress',active:true,steps:[{title:'Inspect files',state:'completed'},{title:'Build UI',state:'active'},{title:'Test',state:'pending'}]}]}));
+test('stopped task status preserves its cancellation response',()=>assert.deepEqual(parseStatusLine('ROUNDTRIP_STATUS:'+JSON.stringify({stage:'cancelled',message:'Stopped',tasks:[{title:'Create games',state:'Task stopped',active:false,steps:[],response:'The task was cancelled before it could finish.'}]})),{stage:'cancelled',message:'Stopped',tasks:[{title:'Create games',state:'Task stopped',active:false,steps:[],response:'The task was cancelled before it could finish.'}]}));
 test('non-status and malformed lines are ignored',()=>{assert.equal(parseStatusLine('warning'),null);assert.equal(parseStatusLine('ROUNDTRIP_STATUS:{'),null)});
 
 test('model selection preserves provider/model slash',()=>{const a=buildArgs('/script.py','fix','/repo',{model:'Claude/Opus 5.5',timeout:900});assert.equal(a[a.indexOf('--model')+1],'Claude/Opus 5.5')});
@@ -43,6 +44,9 @@ test('chat actions appear in the panel without duplicate view-title buttons', ()
 
 test('webview renders task plans and the working timeline as structured UI', () => {
   const source = fsT.readFileSync(pathT.join(__dirname, '../media/chat.js'), 'utf8');
-  for (const name of ['task-card', 'task-row', 'work-section', 'work-timeline', 'thought-prose']) assert.ok(source.includes(name));
+  for (const name of ['task-card', 'task-row', 'task-stop', 'task-stopped-response', 'work-section', 'work-timeline', 'thought-prose']) assert.ok(source.includes(name));
   assert.ok(source.includes('Working through the steps'));
+  assert.ok(source.includes("step.append(updateAnswer(i+1,byAfter.get(i+1),lastAfter,true))"));
+  assert.ok(source.includes("vscode.postMessage({type:'cancel'})"));
+  assert.ok(source.includes("stopped?'Task stopped'"));
 });
