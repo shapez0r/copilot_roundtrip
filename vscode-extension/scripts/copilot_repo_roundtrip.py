@@ -8,7 +8,7 @@ validates the returned archive, and replaces the worktree after a backup.
 UI automation is unsupported and selectors can change. Run `login` once, then `fix`.
 """
 from __future__ import annotations
-import argparse, atexit, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, zipfile
+import argparse, atexit, base64, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, zipfile
 from pathlib import Path, PurePosixPath
 
 DEFAULT_URL = "https://m365.cloud.microsoft/chat/"
@@ -1230,6 +1230,133 @@ def enable_temporary_chat(page, sel, timeout_seconds=30):
     raise SystemExit("Temporary chat could not be enabled (Copilot did not show the temporary chat state).")
 
 
+# Copilot often shows a generated file only as a link or chip with its name ("repo-fixed.zip"),
+# without a download attribute, "download" in the href or a "Download" button. Such links are
+# also accepted when their text or href names a .zip file (never the uploaded .zip.txt archive).
+ZIP_LINK_SELECTOR = ('a[href*=".zip" i], a:has-text(".zip"), [role="link"]:has-text(".zip"), '
+                     'button:has-text(".zip")')
+ZIP_NAME = re.compile(r"\.zip\b(?!\.txt)", re.I)
+# A link that did not yield a file (e.g. it was rendered before the file was ready) is retried.
+DOWNLOAD_RETRY_SECONDS = 10
+DOWNLOAD_MAX_ATTEMPTS = 6
+
+
+def download_candidates(page, sel, exclude_names):
+    "New (this turn) download links as (node, href, key), latest first; uploaded files are skipped."
+    result, keys = [], set()
+    excluded = [n.lower() for n in exclude_names if n]
+    for selector, need_zip in ((sel["download"], False), (ZIP_LINK_SELECTOR, True)):
+        try:
+            loc = page.locator(selector)
+            count = loc.count()
+        except Exception:
+            continue
+        for i in range(count - 1, -1, -1):
+            node = loc.nth(i)
+            if is_prior(node):
+                continue  # download link of an earlier turn
+            try:
+                if need_zip and not node.is_visible():
+                    continue
+                href = node.get_attribute("href", timeout=2000) or ""
+                text = node.inner_text(timeout=2000) or ""
+            except Exception:
+                continue
+            label = (text + " " + href).lower()
+            if any(n in label for n in excluded) or (need_zip and not ZIP_NAME.search(text + " " + href)):
+                continue
+            key = href + text
+            if key in keys:
+                continue
+            keys.add(key)
+            result.append((node, href, key))
+    return result
+
+
+def _zip_name(name, fallback="copilot-result.zip"):
+    name = Path(str(name or "").split("?")[0].split("#")[0]).name.strip()
+    return name or fallback
+
+
+def click_download(ctx, page, node, work: Path, timeout_seconds=15):
+    "Click a link and save the file it downloads (in this page or a popup it opens), else None."
+    got, before, url = [], set(ctx.pages), page.url
+    def on_download(d):
+        got.append(d)
+    def on_page(pg):
+        pg.on("download", on_download)
+    for pg in ctx.pages:
+        pg.on("download", on_download)
+    ctx.on("page", on_page)
+    try:
+        node.click(timeout=5000)
+        deadline = time.monotonic() + timeout_seconds
+        while not got and time.monotonic() < deadline:
+            pause(page, 250)
+        if not got:
+            # A plain link may have navigated the chat page itself: return to the chat.
+            if page.url != url:
+                try:
+                    page.go_back(wait_until="domcontentloaded", timeout=30000)
+                except Exception:
+                    pass
+            return None
+        target = work / _zip_name(got[0].suggested_filename)
+        got[0].save_as(str(target))
+        return target
+    finally:
+        try:
+            ctx.remove_listener("page", on_page)
+        except Exception:
+            pass
+        for pg in ctx.pages:
+            try:
+                pg.remove_listener("download", on_download)
+            except Exception:
+                pass
+            # Close preview tabs opened by the link; the chat page stays open.
+            if pg not in before and pg != page:
+                try:
+                    pg.close()
+                except Exception:
+                    pass
+
+
+FETCH_BLOB_SCRIPT = r"""
+async (href) => {
+  const r = await fetch(href);
+  if (!r.ok) return null;
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+"""
+
+
+def fetch_download(ctx, page, href, work: Path):
+    "Fetch a link's target directly (signed-in browser session); only ZIP content is accepted."
+    from urllib.parse import urljoin
+    if not href.startswith(("blob:", "data:")):
+        href = urljoin(page.url, href)  # relative links ("/files/repo.zip")
+    try:
+        if href.startswith(("blob:", "data:")):
+            encoded = page.evaluate(FETCH_BLOB_SCRIPT, href)
+            data = base64.b64decode(encoded) if encoded else b""
+        elif href.lower().startswith(("https://", "http://")):
+            response = ctx.request.get(href, timeout=60000)
+            data = response.body() if response.ok else b""
+        else:
+            return None
+    except Exception:
+        return None
+    if not data.startswith(b"PK"):
+        return None
+    target = work / _zip_name(href if not href.startswith(("blob:", "data:")) else "")
+    target.write_bytes(data)
+    return target
+
+
 def open_context(p, profile: Path, headless: bool, downloads: Path):
     return p.chromium.launch_persistent_context(
         user_data_dir=str(profile), headless=headless, accept_downloads=True,
@@ -1376,7 +1503,10 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
             last_signature = None
             last_live = None
             live_blocks, live_answers = [], []
-            seen = set()
+            # Download attempts per link: (count, last attempt time). A link can be rendered before
+            # its file is ready, so a failed attempt is retried instead of being skipped for good.
+            attempts = {}
+            upload_names = [source_txt.name] + [a.name for a in attachments]
             last_update = started
             while downloaded is None:
                 raise_if_quit()
@@ -1407,30 +1537,26 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                     emit_status("waiting", f"Still waiting for Copilot response ({int(now - started)}s elapsed, "
                                            f"no new output for {int(idle)}s of {idle_limit}s allowed)...")
                     last_update = now
-                candidates = page.locator(sel["download"])
-                for i in range(candidates.count() - 1, -1, -1):
-                    node = candidates.nth(i)
-                    if is_prior(node):
-                        continue  # download link of an earlier turn
-                    try:
-                        href = node.get_attribute("href") or ""
-                        key = href + (node.inner_text(timeout=2000) or "")
-                    except Exception:
+                now = time.monotonic()
+                for node, href, key in download_candidates(page, sel, upload_names):
+                    if href and href in prior_keys:
                         continue
-                    if key in seen or (href and href in prior_keys):
+                    count, last = attempts.get(key, (0, 0.0))
+                    if count >= DOWNLOAD_MAX_ATTEMPTS or (count and now - last < DOWNLOAD_RETRY_SECONDS):
                         continue
-                    seen.add(key)
-                    try:
-                        with page.expect_download(timeout=15000) as di:
-                            node.click()
-                        d = di.value
-                        downloaded = work / d.suggested_filename
-                        d.save_as(str(downloaded))
+                    attempts[key] = (count + 1, now)
+                    # A link's target is fetched directly first (no navigation away from the chat);
+                    # otherwise (JS-handled links and buttons) the link is clicked.
+                    downloaded = fetch_download(ctx, page, href, work) if href else None
+                    if downloaded is None:
+                        try:
+                            downloaded = click_download(ctx, page, node, work)
+                        except QuitRequested:
+                            raise
+                        except Exception:
+                            downloaded = None
+                    if downloaded is not None:
                         break
-                    except PlaywrightTimeout:
-                        continue
-                    except Exception:
-                        continue
                 if downloaded is None:
                     pause(page, 1500)
             if downloaded is None:
