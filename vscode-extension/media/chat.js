@@ -16,7 +16,7 @@
     if(Array.isArray(item.attachments)&&item.attachments.length){const att=document.createElement('div');att.className='message-attachments';att.textContent='Attached: '+item.attachments.join(', ');card.append(att);}
     messages.append(card);
     if(item.role==='assistant' && ('diffStat' in item || 'gitStatus' in item)) messages.append(renderChanges(item.diffStat),renderGitStatus(item.gitStatus));
-    messages.scrollTop=messages.scrollHeight;
+    $('conversation').scrollTop=$('conversation').scrollHeight;
   }
   // Webview clipboard access is unreliable in VS Code sidebars; the extension host writes the clipboard.
   function copyText(value){
@@ -134,6 +134,7 @@
   let lastReasoning=[], lastAnswers=[];
   function renderActivity(){
     const running=activity.busy||activity.login;
+      $('progress').hidden=!running&&!activity.message&&!lastReasoning.length&&!lastAnswers.length;
     const text=$('activityText'), spinner=$('activitySpinner');
     const next=running?(activity.message||'Starting...'):(activity.message||'Idle');
     spinner.hidden=!running;
@@ -281,17 +282,17 @@
   }
   window.addEventListener('message',e=>{
     const m=e.data;
-    if(m.type==='message')add(m.item);
+    if(m.type==='message'){setHistoryOpen(false);add(m.item);}
     if(m.type==='model' && !$('model').dataset.initialized){$('model').value=m.value||'GPT/GPT-6';$('model').dataset.initialized='true';}
-    if(m.type==='loginActive'){$('finishLogin').hidden=!m.value;$('login').disabled=m.value;activity.login=!!m.value;renderActivity();}
+    if(m.type==='loginActive'){if(m.value){$('settingsPanel').hidden=false;$('settingsToggle').setAttribute('aria-expanded','true');}$('finishLogin').hidden=!m.value;$('login').disabled=m.value;activity.login=!!m.value;renderActivity();}
       if(m.type==='showBrowser' && !$('showBrowser').dataset.initialized){$('showBrowser').checked=!!m.value;$('showBrowser').dataset.initialized='true';}
       if(m.type==='temporaryChat' && !$('temporaryChat').dataset.initialized){tempPref=m.value!==false;$('temporaryChat').dataset.initialized='true';syncTemporary();}
       if(m.type==='chats'){chats=Array.isArray(m.items)?m.items:[];renderHistory();}
       if(m.type==='chatState'){chatState=m;renderChatState();renderHistory();}
       if(m.type==='toggleHistory')setHistoryOpen($('historyPanel').hidden);
       if(m.type==='focusPrompt'&&!prompt.disabled)prompt.focus();
-      if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);}
-    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning,lastAnswers);$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;syncTemporary();$('newChat').disabled=m.value;renderHistory();renderAttachments();}
+      if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);setHistoryOpen(!m.items.length);}
+    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning,lastAnswers);$('send').disabled=m.value;$('cancel').disabled=!m.value;$('cancel').hidden=!m.value;$('send').hidden=!!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;syncTemporary();$('newChat').disabled=m.value;renderHistory();renderAttachments();}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
       activity.message=last?last.message:'';renderActivity();
@@ -411,7 +412,7 @@
   document.addEventListener('dragover',e=>e.preventDefault());
   document.addEventListener('drop',e=>{if(!form.contains(e.target))e.preventDefault();});
   $('attach').addEventListener('click',()=>vscode.postMessage({type:'pickAttachments'}));
-  form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked,temporaryChat:$('temporaryChat').checked,attachments:attachments.map(a=>a.kind==='path'?{kind:'path',path:a.path,name:a.name}:{kind:'data',name:a.name,data:a.data})});prompt.value='';attachments=[];renderAttachments();});
+  form.addEventListener('submit',e=>{e.preventDefault();if(!prompt.value.trim())return;vscode.postMessage({type:'run',prompt:prompt.value,model:$('model').value,showBrowser:$('showBrowser').checked,temporaryChat:$('temporaryChat').checked,attachments:attachments.map(a=>a.kind==='path'?{kind:'path',path:a.path,name:a.name}:{kind:'data',name:a.name,data:a.data})});prompt.value='';resizePrompt();attachments=[];renderAttachments();});
   // Enter runs the prompt exactly like clicking Modify repository; Shift+Enter inserts a new line.
   prompt.addEventListener('keydown',e=>{
     if(e.key!=='Enter'||e.shiftKey||e.altKey||e.isComposing||e.keyCode===229)return;
@@ -447,6 +448,7 @@
   function setHistoryOpen(open){
     $('historyPanel').hidden=!open;$('historyToggle').setAttribute('aria-expanded',String(open));
     $('historyToggle').title=open?'Hide chat history':'Show chat history';
+      $('historyToggle').setAttribute('aria-label',$('historyToggle').title);
     if(open)renderHistory();
   }
   function renderHistory(){
@@ -471,5 +473,10 @@
   $('historyToggle').addEventListener('click',()=>setHistoryOpen($('historyPanel').hidden));
   $('login').addEventListener('click',()=>vscode.postMessage({type:'login'}));
     $('finishLogin').addEventListener('click',()=>vscode.postMessage({type:'finishLogin'}));
-  vscode.postMessage({type:'ready'});
+  // Keep the composer compact until a multiline request needs more space.
+    function resizePrompt(){prompt.style.height='auto';prompt.style.height=Math.min(180,Math.max(66,prompt.scrollHeight))+'px';}
+    prompt.addEventListener('input',resizePrompt);
+    $('settingsToggle').addEventListener('click',()=>{const panel=$('settingsPanel');panel.hidden=!panel.hidden;$('settingsToggle').setAttribute('aria-expanded',String(!panel.hidden));});
+    document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('settingsPanel').hidden){$('settingsPanel').hidden=true;$('settingsToggle').setAttribute('aria-expanded','false');$('settingsToggle').focus();}});
+    vscode.postMessage({type:'ready'});
 })();

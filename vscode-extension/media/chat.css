@@ -133,3 +133,58 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .rt-step-chevron[hidden]{display:none}
 .rt-step-head[aria-expanded="true"] .rt-step-chevron{transform:rotate(90deg)}
 .rt-step.coding .rt-step-text{font-style:italic;color:var(--vscode-descriptionForeground)}
+
+/* Native chat layout: a quiet session list and a bottom-docked composer. */
+[hidden]{display:none!important}
+html,body{height:100%;overflow:hidden}
+body{font-size:var(--vscode-font-size,13px)}
+main{height:100%;padding:8px 12px 6px;gap:8px;min-width:0}
+button,input,textarea{font:inherit}
+.chat-bar{min-height:28px;gap:2px;flex-shrink:0}
+.chat-title{font-size:13px}
+button.icon-button,.chat-bar button{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:5px;background:transparent;color:var(--vscode-icon-foreground,var(--vscode-foreground));border-radius:5px;flex-shrink:0}
+button.icon-button:hover,.chat-bar button:hover{background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+button:disabled{opacity:.4}
+.settings-panel{padding:10px;border:1px solid var(--vscode-widget-border,var(--vscode-panel-border));border-radius:6px;display:flex;flex-wrap:wrap;gap:10px 14px;flex-shrink:0}
+.settings-panel strong,.settings-panel .hint{width:100%}.settings-panel .hint{line-height:1.5}
+.sign-in-actions{display:flex;gap:6px}
+.conversation{flex:1 1 auto;min-height:0;overflow:auto;scrollbar-gutter:stable}
+#messages{min-height:0;max-height:none;overflow:visible;gap:16px}
+.message{border:0;padding:10px 2px;border-radius:0;line-height:1.5}
+.message.user{padding:10px 12px;border:1px solid var(--vscode-chat-requestBorder,var(--vscode-panel-border));border-radius:8px;background:var(--vscode-chat-requestBackground,var(--vscode-textBlockQuote-background))}
+.message.error{border-left:2px solid var(--vscode-errorForeground);padding-left:10px}
+.message-head strong{font-size:12px}.message-copy{background:transparent;color:var(--vscode-descriptionForeground)}
+.history-panel{padding:0;border:0;border-radius:0;max-height:none;overflow:visible}
+.history-list{margin:4px 0;padding:0;gap:6px}
+.history-item{padding:2px 0;align-items:center}
+.history-item::before{content:'\2022';color:var(--vscode-descriptionForeground);opacity:.5;margin:0 6px}
+.history-open{padding:7px 4px;gap:5px;font-size:13px}
+.history-title{font-weight:400}.history-meta{font-size:11px;color:var(--vscode-descriptionForeground);opacity:1}
+.history-delete{width:26px;height:26px;padding:0;opacity:.55}
+.history-empty{font-size:12px;line-height:1.6;padding:6px}
+#progress{border:0;padding:8px 2px;font-size:12px}
+#activityLine{font-weight:400;color:var(--vscode-descriptionForeground)}
+.composer-area{flex:0 0 auto;min-width:0;padding:0 0 2px}
+.composer-tip{margin:0;padding:8px 10px 9px;font-size:12px;line-height:1.4;color:var(--vscode-descriptionForeground);border:1px solid var(--vscode-panel-border);border-bottom:0;border-radius:8px 8px 0 0}
+#form{position:relative;min-width:0;border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:8px;background:var(--vscode-input-background,var(--vscode-editor-background));padding:8px;box-shadow:0 1px 3px var(--vscode-widget-shadow,transparent)}
+#form:focus-within{border-color:var(--vscode-focusBorder)}
+#form.dragging{outline:2px dashed var(--vscode-focusBorder);outline-offset:-3px}
+#form.dragging textarea{outline:0}
+#prompt{display:block;min-height:66px;max-height:180px;width:100%;padding:6px 3px;resize:none;border:0;outline:0;background:transparent;color:var(--vscode-input-foreground,var(--vscode-foreground));line-height:1.5}
+#prompt:focus-visible{outline:0}
+#prompt::placeholder{color:var(--vscode-input-placeholderForeground,var(--vscode-descriptionForeground))}
+.composer-toolbar{display:flex;align-items:center;gap:4px;min-width:0;flex-wrap:wrap}
+.agent-label{font-size:12px;color:var(--vscode-descriptionForeground);white-space:nowrap;padding:0 4px}
+.model-combo{position:relative;display:flex;align-items:center;flex:1 1 100px;min-width:70px;max-width:210px}
+.model-combo #model{width:100%;min-width:0;padding:4px;border:0;background:transparent;color:var(--vscode-descriptionForeground);font-size:12px}
+#modelToggle{padding:4px;background:transparent;color:var(--vscode-descriptionForeground)}
+#modelList{top:auto;bottom:100%;left:0;right:auto;min-width:180px;max-width:calc(100vw - 40px);margin:0 0 6px}
+.actions{margin-left:auto;gap:2px}
+#send{color:var(--vscode-textLink-foreground,var(--vscode-focusBorder))}
+#cancel{color:var(--vscode-errorForeground)}
+.attachments{margin:0 0 4px;flex-direction:row;flex-wrap:wrap;gap:4px}
+.attachment{max-width:100%;width:auto;border-style:dashed;padding:2px 4px;font-size:11px}
+.attachment img{width:22px;height:22px}.attachment-size{display:none}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:280px){main{padding:6px}.agent-label{display:none}.composer-tip{font-size:11px}}
