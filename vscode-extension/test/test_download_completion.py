@@ -39,6 +39,13 @@ class CompletionTests(unittest.TestCase):
             self.assertFalse(rt.download_retry_due(count, 100, 159))
             self.assertTrue(rt.download_retry_due(count, 100, 160))
 
+    def test_task_status_message_describes_visible_plan(self):
+        tasks = [{'title': 'Add browser games', 'state': 'In progress', 'active': True,
+                  'steps': ['Extract repository', 'Package repository']}]
+        self.assertEqual(rt.task_status_message(tasks),
+                         'Copilot task "Add browser games" is in progress; 2 plan items visible.')
+        self.assertEqual(rt.task_status_message([]), '')
+
     def test_download_precedes_optional_reasoning_capture(self):
         tree = ast.parse(SCRIPT.read_text())
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run_roundtrip')
@@ -193,6 +200,31 @@ class BrowserTests(unittest.TestCase):
         self.assertNotIn('secret_code', str((blocks, answers)))
         self.assertEqual(len(rt.download_candidates(self.page, self.sel, [])), 1)
         self.assertTrue(rt.wait_for_response_end(self.page, self.sel, timeout_seconds=1))
+
+    def test_long_running_task_card_is_expanded_and_reported(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <details id="task"><summary><span>Add Beer and Dinosaur Browser Games</span>
+            <span>In progress</span></summary><ol>
+            <li>Extract and inspect the repository and its instructions</li>
+            <li>Review documentation and comments, then test and verify the repository</li>
+          </ol></details></article></main>''')
+        tasks = rt.read_task_cards(self.page)
+        self.assertTrue(self.page.locator('#task').evaluate('e => e.open'))
+        self.assertEqual(tasks, [{
+            'title': 'Add Beer and Dinosaur Browser Games',
+            'state': 'In progress',
+            'active': True,
+            'steps': [
+                'Extract and inspect the repository and its instructions',
+                'Review documentation and comments, then test and verify the repository',
+            ],
+        }])
+
+    def test_prior_long_running_task_card_is_ignored(self):
+        self.page.set_content('''<main><article data-roundtrip-prior-msg="1">
+          <details open><summary>Old task <span>Completed</span></summary><p>Old step</p></details>
+          </article></main>''')
+        self.assertEqual(rt.read_task_cards(self.page), [])
 
 
 if __name__ == '__main__':

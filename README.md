@@ -77,7 +77,7 @@ The tool requires a clean working tree by default. `--allow-dirty` bypasses this
 1. Confirms the target is a Git worktree and checks cleanliness unless `--allow-dirty` is set.
 2. Runs `git archive --format=zip HEAD`, saving ZIP bytes under a timestamped `.zip.txt` name (for example `repo-20261024-191212.zip.txt`) for attachment.
 3. Opens Copilot Chat, enables **Temporary chat** (unless `--no-temporary-chat`), selects the requested model, uploads the archive (followed by any `--attach` files), waits for an attachment chip and bounded progress checks (up to 180 seconds), then submits the repair request (retrying for up to 120 seconds).
-4. Lets the Copilot UI load for about 2.5 seconds after opening it (the browser is hidden by default), then waits for a downloadable response. The timeout only counts time with no new on-screen output (reasoning or response text) and restarts whenever output appears; if it expires, a screenshot and HTML diagnostics are written to the temporary run directory and removed when the run exits. They are not retained for later inspection, even with `--work-dir`. Reasoning sections (as in the Copilot web UI: header = current step name such as "Reasoning" or "Creating file" while running, "Reasoned for 8m 6s" when done) with their steps (latest 10 lines each), and the intermediate (live) answers written before, between and after them, are streamed live as `ROUNDTRIP_REASONING:` JSON lines on stderr. Code blocks are omitted; "Coding and executing" steps are sent as empty steps (title only, no code).
+4. Lets the Copilot UI load for about 2.5 seconds after opening it (the browser is hidden by default), then waits for a downloadable response. Long-running Copilot task cards are expanded so their title, state and visible plan appear in the execution status and file controls become discoverable when the task completes. The timeout only counts time with no new on-screen output or task-card change and restarts whenever either changes; if it expires, a screenshot and HTML diagnostics are written to the temporary run directory and removed when the run exits. They are not retained for later inspection, even with `--work-dir`. Reasoning sections (as in the Copilot web UI: header = current step name such as "Reasoning" or "Creating file" while running, "Reasoned for 8m 6s" when done) with their steps (latest 10 lines each), and the intermediate (live) answers written before, between and after them, are streamed live as `ROUNDTRIP_REASONING:` JSON lines on stderr. Code blocks are omitted; "Coding and executing" steps are sent as empty steps (title only, no code).
    Result links can open preview tabs, navigated previews, or dialogs; the tool follows their Download controls and restores the chat afterward. Download navigation errors do not discard an already-started file. Unavailable files are retried with a delay capped at 60 seconds until the inactivity timeout.
 5. Checks that the download is a ZIP with files, rejects traversal paths, `.git` entries and Unix symlinks, and refuses a byte-identical archive.
 6. Backs up all existing worktree files (including untracked files), clears the worktree except `.git`, then copies the complete extracted repository into place. On an apply failure, it restores the backup. It prints Git status, diff statistics, and the latest Copilot assistant chat response (when available) in the JSON output.
@@ -109,7 +109,7 @@ For `fix`, options include:
 - `--model LABEL` — provider/model pair: `Claude/Opus 5.5` or `GPT/GPT-6` (default: `GPT/GPT-6`).
 - `--work-dir PATH` — optional parent folder for temporary archives, downloads and diagnostics (deleted automatically).
 - `--backup-dir PATH` — deprecated; rollback copies are temporary and deleted automatically.
-- `--timeout SECONDS` — seconds with no new on-screen Copilot output before giving up (default: `900`); new reasoning or response output restarts the timer.
+- `--timeout SECONDS` — seconds with no new on-screen Copilot output or long-running task-card change before giving up (default: `900`).
 - `--show-browser` — show Chromium during the fix (by default it runs hidden and requires an existing signed-in profile).
 - `--headless` — deprecated; the browser is already hidden by default.
 - `--allow-dirty` — allow a dirty worktree (use with caution).
@@ -189,7 +189,7 @@ All settings use the `copilotRoundtrip.` prefix and appear under **Settings > Re
 | --- | --- | --- |
 | `pythonPath` | `python` | Python executable used to create the managed virtual environment. |
 | `model` | `GPT/GPT-6` | Initial provider/model value in the editable sidebar field. |
-| `timeout` | `900` | Inactivity timeout in seconds; new on-screen output restarts it. |
+| `timeout` | `900` | Inactivity timeout in seconds; new on-screen output or a task-card change restarts it. |
 | `showBrowser` | `false` | Initial state of **Show browser** for modification runs; sign-in is always visible. |
 | `temporaryChat` | `true` | Initial state of **Temporary chat** for new chats. |
 | `allowDirty` | `false` | Bypass the clean-tree check; uploads still use `HEAD` only. |
@@ -214,7 +214,7 @@ On Windows, set `pythonPath` to a Python executable if `python` is not on `PATH`
 
 - **Chat options**, beside Attach and Model, contains **Show browser** (off by default), **Temporary chat** (on by default), and sign-in controls. Temporary chat is enabled before model selection.
 - The browser waits about 2.5 seconds after navigation. Uploads can take up to 180 seconds to settle; submission retries for up to 120 seconds.
-- `ROUNDTRIP_STATUS:` JSON lines on stderr update the sidebar's activity line and spinner. Stdout contains the final JSON result.
+- `ROUNDTRIP_STATUS:` JSON lines on stderr update the sidebar's activity line and spinner, including the state and visible plan-item count of a long-running Copilot task. Stdout contains the final JSON result.
 - `ROUNDTRIP_REASONING:` JSON lines stream visible reasoning steps and interleaved answers. Sections start collapsed, preserve expansion choices, and show the latest 10 lines per step. Coding steps display a placeholder instead of code.
 - Interim answers appear in full between reasoning sections. Hidden page text is excluded; the final layout is captured after response completion.
 - Git subprocesses use null stdin and `GIT_TERMINAL_PROMPT=0`; script stdin is reserved for Cancel/Q.

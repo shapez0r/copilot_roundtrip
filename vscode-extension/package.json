@@ -68,7 +68,7 @@
           "type": "integer",
           "default": 900,
           "minimum": 1,
-          "description": "Seconds without new on-screen Copilot output (reasoning or response) before giving up; the timer restarts whenever new output appears."
+          "description": "Seconds without new on-screen Copilot output or a long-running task-card change before giving up."
         },
         "copilotRoundtrip.allowDirty": {
           "type": "boolean",

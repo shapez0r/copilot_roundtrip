@@ -657,6 +657,79 @@ async (args) => {
 """
 
 
+# Detect Copilot's long-running task card, expand it, and report its visible plan.
+TASK_SCRIPT = r"""
+async () => {
+  const visible = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const stateRe = /^(in progress|completed?|done|failed|cancell?ed)$/i;
+  const prior = el => el.hasAttribute('data-roundtrip-prior') ||
+    !!el.closest('[data-roundtrip-prior-msg]');
+  const linesOf = el => String(el && el.innerText || '').split(/\r?\n/).map(norm).filter(Boolean);
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const statusNodes = Array.from(document.querySelectorAll('span, p, div, [role="status"]'))
+    .filter(el => visible(el) && !prior(el) && stateRe.test(norm(el.textContent)) &&
+      !Array.from(el.children).some(child => stateRe.test(norm(child.textContent))));
+  const tasks = [];
+  const seen = new Set();
+  for (const statusNode of statusNodes) {
+    const state = norm(statusNode.textContent);
+    let card = null, fallback = null;
+    for (let el = statusNode.parentElement, depth = 0; el && depth < 8; el = el.parentElement, depth++) {
+      if (prior(el) || /^(MAIN|BODY|HTML)$/.test(el.tagName)) break;
+      if (el.closest('form, nav, header, footer, [role="dialog"], [role="menu"]')) break;
+      const lines = linesOf(el), text = norm(el.innerText);
+      if (!text || text === state || text.length > 4000 || lines.length > 30) continue;
+      const hasControl = !!el.querySelector('button, summary, [role="button"], [aria-expanded]');
+      if (hasControl && !fallback) fallback = el;
+      if (hasControl && (lines.length >= 3 || el.querySelector('li'))) { card = el; break; }
+    }
+    card = card || fallback;
+    if (!card || seen.has(card)) continue;
+    seen.add(card);
+    let lines = linesOf(card);
+    let title = '';
+    const titleNodes = Array.from(card.querySelectorAll('h1, h2, h3, h4, h5, h6, strong, [data-testid*="title" i], [class*="title" i]'));
+    for (const node of titleNodes) {
+      const text = norm(node.textContent);
+      if (visible(node) && text && text.length <= 200 && !stateRe.test(text) && !node.contains(statusNode) &&
+          (node.compareDocumentPosition(statusNode) & Node.DOCUMENT_POSITION_FOLLOWING)) title = text;
+    }
+    if (!title) {
+      const stateIndex = lines.findIndex(line => stateRe.test(line));
+      if (stateIndex > 0) title = lines[stateIndex - 1];
+      else {
+        const combined = lines.find(line => line.toLowerCase().includes(state.toLowerCase()));
+        title = norm(combined && combined.replace(new RegExp(state, 'i'), ''));
+      }
+    }
+    title = title || lines.find(line => !stateRe.test(line)) || 'Copilot task';
+    const collapsed = Array.from(card.querySelectorAll('button[aria-expanded="false"], [role="button"][aria-expanded="false"], summary'))
+      .filter(visible);
+    if (collapsed.length === 1) {
+      try { collapsed[0].click(); await wait(200); lines = linesOf(card); } catch (_) { /* retry later */ }
+    }
+    if (lines.length < 3) {
+      for (let el = card.parentElement, depth = 0; el && depth < 5; el = el.parentElement, depth++) {
+        const wider = linesOf(el);
+        if (wider.length >= 3 && wider.length <= 30 &&
+            norm(el.innerText).toLowerCase().includes(state.toLowerCase())) {
+          card = el; lines = wider; break;
+        }
+      }
+    }
+    let steps = Array.from(card.querySelectorAll('li')).filter(visible).map(el => norm(el.innerText)).filter(Boolean);
+    if (!steps.length) steps = lines.map(line => norm(line.replace(title, '').replace(state, '')))
+      .filter(line => line && !stateRe.test(line) &&
+        !/^(show more|working through the steps|thought process)$/i.test(line));
+    steps = steps.slice(0, 20);
+    tasks.push({title, state, active: /^in progress$/i.test(state), steps});
+  }
+  return tasks;
+}
+"""
+
+
 # Mark existing output so saved-chat follow-ups read only the new response.
 MARK_PRIOR_SCRIPT = r"""
 (args) => {
@@ -698,6 +771,27 @@ def read_screen(page, sel, prompt=""):
         return data.get("signature"), data.get("blocks") or [], data.get("answers") or []
     except Exception:
         return None, None, None
+
+
+def read_task_cards(page):
+    """Expand and read current-turn long-running task cards."""
+    try:
+        tasks = page.evaluate(TASK_SCRIPT)
+        return tasks if isinstance(tasks, list) else []
+    except Exception:
+        return []
+
+
+def task_status_message(tasks):
+    """Describe the latest visible long-running task card."""
+    if not tasks:
+        return ""
+    task = tasks[-1]
+    title = str(task.get("title") or "Copilot task").strip()
+    state = str(task.get("state") or "In progress").strip()
+    count = len(task.get("steps") or [])
+    detail = f"; {count} plan item{'s' if count != 1 else ''} visible" if count else ""
+    return f'Copilot task "{title}" is {state.lower()}{detail}.'
 
 
 def run(cmd, cwd=None, capture=True):
@@ -1510,12 +1604,13 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 reported_url = conversation_url(page.url, args.url) or chat_url
                 emit_chat(reported_url)
             emit_status("waiting", "Waiting for Copilot to generate a downloadable repository...")
-            # Reset the inactivity timeout whenever reasoning or response output changes.
+            # Reset the inactivity timeout when visible output or a task card changes.
             idle_limit = args.timeout
             started = time.monotonic()
             last_activity = started
             last_signature = None
             last_live = None
+            last_tasks = []
             live_blocks, live_answers = [], []
             # Retry unavailable files with bounded backoff until the inactivity deadline.
             attempts = {}
@@ -1531,6 +1626,13 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                         reported_url = current_url
                         emit_chat(current_url)
                 now = time.monotonic()
+                # Expand task cards so their plans and completed file controls are visible.
+                tasks = read_task_cards(page)
+                if tasks != last_tasks:
+                    last_tasks = tasks
+                    last_activity = now
+                    if tasks:
+                        emit_status("task", task_status_message(tasks))
                 for node, href, key in download_candidates(page, sel, upload_names):
                     if href and href in prior_keys:
                         continue
@@ -1569,8 +1671,11 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 if idle >= idle_limit:
                     break
                 if now - last_update >= 15:
-                    emit_status("waiting", f"Still waiting for Copilot response ({int(now - started)}s elapsed, "
-                                           f"no new output for {int(idle)}s of {idle_limit}s allowed)...")
+                    task_message = task_status_message(last_tasks)
+                    prefix = task_message + " " if task_message else "Still waiting for Copilot response. "
+                    emit_status("task" if task_message else "waiting",
+                                f"{prefix}{int(now - started)}s elapsed; no new output for "
+                                f"{int(idle)}s of {idle_limit}s allowed.")
                     last_update = now
                 if downloaded is None:
                     pause(page, 1500)
@@ -1578,7 +1683,9 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 page.screenshot(path=str(work / "copilot-timeout.png"), full_page=True)
                 (work / "copilot-timeout.html").write_text(page.content(), encoding="utf-8")
                 ctx.close()
-                raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s. Temporary diagnostics were removed with the run directory")
+                task_note = " " + task_status_message(last_tasks) if last_tasks else ""
+                raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s."
+                                 f"{task_note} Temporary diagnostics were removed with the run directory")
             # Wait for response completion, then read twice to capture the final collapsed-section layout.
             emit_status("waiting", "Download ready; waiting for Copilot to finish its response...")
             wait_for_response_end(page, sel)
@@ -1644,7 +1751,7 @@ def main():
     fp.add_argument("--work-dir", default=None, help="Optional parent for automatically deleted temporary round-trip files")
     fp.add_argument("--backup-dir", default=None, help="Deprecated; rollback copies are temporary and automatically deleted")
     fp.add_argument("--timeout", type=int, default=900,
-                    help="Seconds without new on-screen output (reasoning or response) before giving up (default: 900)")
+                    help="Seconds without new on-screen output or a task-card change before giving up (default: 900)")
     fp.add_argument("--model", default="GPT/GPT-6",
                     help="Provider/model pair (default: GPT/GPT-6)")
     fp.add_argument("--show-browser", action="store_true", help="Show Chromium during fixes (default: invisible)")
