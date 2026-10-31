@@ -107,15 +107,23 @@ test('summary keeps the fixed label bold and the changing step separate', () => 
   assert.match(css, /\.work-title-prefix\{font-weight:700\}/);
   assert.match(css, /\.work-title-step\{font-weight:400\}/);
 });
-test('active indicators share a smooth nine-dot grid and respect reduced motion', () => {
+test('active indicators smoothly build a shared brick wall and respect reduced motion', () => {
   const css = fs.readFileSync(path.join(__dirname, '../media/chat.css'), 'utf8');
-  assert.ok(!css.includes('activity-breathe'));
-  assert.ok(!css.includes('rotate(45deg)'));
-  assert.match(css, /animation:activity-dots 2.4s ease-in-out infinite/);
-  const frames = css.match(/@keyframes activity-dots\{(.*)\}\n/)[1];
-  const shadows = [...frames.matchAll(/box-shadow:([^}]+)/g)].map(match => match[1]);
-  assert.equal(shadows.length, 9);
-  for (const shadow of shadows) assert.equal((shadow.match(/color-mix/g) || []).length, 9);
-  assert.equal(shadows[0], shadows.at(-1));
+  assert.ok(!css.includes('activity-dots'));
+  assert.match(css, /animation:activity-build 4.8s cubic-bezier\(\.22,1,\.36,1\) infinite/);
+  const rule = css.match(/\.spinner::before,\.task-state.active::before,\.task-row-state.active::before\{([^}]+)\}/)[1];
+  assert.equal((rule.match(/linear-gradient/g) || []).length, 6);
+  assert.ok(rule.includes('background-repeat:no-repeat'));
+  assert.ok(rule.includes('background-size:4px 3px, 4px 3px, 4px 3px, 7px 3px, 7px 3px, 8px 3px'));
+  const frames = [...css.matchAll(/(\d+)%\{opacity:(\d);background-position:([^;]+);background-size:([^}]+)\}/g)];
+  const frame = percent => frames.find(item => Number(item[1]) === percent);
+  for (let i = 0; i < 6; i++) {
+    const sizes = frame(13 + 11 * i)[4].split(',');
+    assert.equal(sizes.filter(size => !size.startsWith('0px')).length, i + 1);
+    assert.ok(sizes.slice(i + 1).every(size => size === '0px 3px'));
+  }
+  assert.equal(frame(82)[2], '1');
+  assert.equal(frame(96)[2], '0');
+  assert.deepEqual(frame(0).slice(2), frame(100).slice(2));
   assert.match(css, /@media \(prefers-reduced-motion:reduce\).*\.spinner::before,\.task-state.active::before,\.task-row-state.active::before\{animation:none\}/);
 });
