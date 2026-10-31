@@ -107,3 +107,21 @@ input,textarea,select,[contenteditable="true"]{caret-color:var(--vscode-editorCu
 .live-answer-text{font-size:13px;color:var(--vscode-foreground)}
 .live-answer.interim{padding-top:4px}
 .live-answer.interim .live-answer-text{max-height:none;overflow:visible}
+/* Chat history: New chat / History bar and the list of saved chats. */
+.chat-bar{display:flex;align-items:center;gap:6px;min-width:0}
+.chat-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:12px}
+.chat-bar button{flex:0 0 auto;padding:4px 8px;background:var(--vscode-button-secondaryBackground,var(--vscode-button-background));color:var(--vscode-button-secondaryForeground,var(--vscode-button-foreground))}
+.chat-bar button:hover{background:var(--vscode-button-secondaryHoverBackground,var(--vscode-button-hoverBackground))}
+.chat-bar button:focus-visible,.history-item button:focus-visible{outline:2px solid var(--vscode-focusBorder)}
+.history-panel{border:1px solid var(--vscode-panel-border);border-radius:6px;padding:8px;font-size:12px;max-height:40vh;overflow:auto}
+.history-panel[hidden]{display:none}
+.history-empty{margin:6px 0 0;opacity:.75}
+.history-empty[hidden]{display:none}
+.history-list{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:2px}
+.history-item{display:flex;align-items:stretch;gap:4px;border-radius:3px;min-width:0}
+.history-item.active{background:var(--vscode-list-inactiveSelectionBackground,var(--vscode-list-hoverBackground))}
+.history-open{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:4px 6px;background:transparent;color:var(--vscode-foreground);text-align:left}
+.history-open:hover,.history-delete:hover{background:var(--vscode-list-hoverBackground)}
+.history-title{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.history-meta{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.7;font-size:11px}
+.history-delete{flex:0 0 auto;padding:0 8px;background:transparent;color:inherit}

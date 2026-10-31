@@ -56,6 +56,44 @@ function parseLiveLine(line) {
     return {blocks, answers};
   } catch (_) { return null; }
 }
+// Saved (non-temporary) chats report their Copilot conversation URL so follow-ups continue it.
+const CHAT_PREFIX = 'ROUNDTRIP_CHAT:';
+function parseChatLine(line) {
+  if (!line.startsWith(CHAT_PREFIX)) return null;
+  try {
+    const value = JSON.parse(line.slice(CHAT_PREFIX.length));
+    const url = value && typeof value.url === 'string' ? value.url.trim() : '';
+    return /^https:\/\/\S+$/i.test(url) ? url : null;
+  } catch (_) { return null; }
+}
+// Chat history, like the chat history of a coding assistant: chats run with Temporary chat off are
+// kept per workspace and can be reopened and continued. Temporary chats are never saved.
+const CHATS_KEY = 'copilotRoundtrip.chats';
+const CURRENT_CHAT_KEY = 'copilotRoundtrip.currentChat';
+const MAX_CHATS = 100;
+const MAX_SAVED_TEXT = 20000;
+function chatTitle(prompt) {
+  const v = String(prompt || '').replace(/\s+/g, ' ').trim();
+  if (!v) return 'New chat';
+  return v.length > 60 ? v.slice(0, 59).trimEnd() + '\u2026' : v;
+}
+function savedMessage(item) {
+  const out = {...item};
+  if (typeof out.text === 'string' && out.text.length > MAX_SAVED_TEXT) out.text = out.text.slice(0, MAX_SAVED_TEXT) + '\n\u2026';
+  return out;
+}
+// Most recently updated first, at most MAX_CHATS; malformed entries are dropped.
+function normalizeChats(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter(c => c && typeof c === 'object' && typeof c.id === 'string' && Array.isArray(c.messages))
+    .sort((a, b) => (Number(b.updated) || 0) - (Number(a.updated) || 0))
+    .slice(0, MAX_CHATS);
+}
+function chatSummaries(chats, currentId) {
+  return normalizeChats(chats).map(c => ({id: c.id, title: c.title || 'New chat', updated: Number(c.updated) || 0,
+    model: c.model || '', prompts: c.messages.filter(m => m && m.role === 'user').length,
+    linked: !!c.copilotUrl, active: c.id === currentId}));
+}
 function parseReasoningLine(line) {
   const live = parseLiveLine(line);
   return live ? live.blocks : null;
@@ -65,7 +103,9 @@ function buildArgs(script, request, repo, cfg) {
   if (cfg.profilePath) args.push('--profile', cfg.profilePath);
   args.push('fix', request, '--repo', repo, '--model', cfg.model || 'GPT/GPT-6', '--timeout', String(cfg.timeout || 900));
   if (cfg.showBrowser) args.push('--show-browser');
-  if (cfg.temporaryChat === false) args.push('--no-temporary-chat');
+  // Follow-up prompts continue the saved Copilot chat (never a temporary chat).
+  if (cfg.chatUrl) args.push('--chat-url', cfg.chatUrl, '--no-temporary-chat');
+  else if (cfg.temporaryChat === false) args.push('--no-temporary-chat');
   if (cfg.allowDirty) args.push('--allow-dirty');
   if (cfg.workDir) args.push('--work-dir', cfg.workDir);
   if (cfg.backupDir) args.push('--backup-dir', cfg.backupDir);
@@ -197,7 +237,56 @@ async function ensureRuntime(context, cfg, output, progress) {
 }
 
 class ChatProvider {
-  constructor(context, output) { this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; this.loginProc=null; this.reasoning={blocks:[],answers:[]}; }
+  constructor(context, output) {
+    this.context=context; this.output=output; this.busy=false; this.history=[]; this.proc=null; this.currentStatus=""; this.statusHistory=[]; this.loginProc=null; this.reasoning={blocks:[],answers:[]};
+    // Current conversation: a saved chat (currentId), or an unsaved session that is temporary when
+    // this.temporary is true (null = nothing sent yet, decided by the first prompt).
+    this.chats=normalizeChats(context.workspaceState.get(CHATS_KEY,[]));
+    this.currentId=null; this.temporary=null;
+    const chat=this.chats.find(c=>c.id===context.workspaceState.get(CURRENT_CHAT_KEY,null));
+    if(chat){this.currentId=chat.id;this.history=chat.messages.slice();this.temporary=false;}
+  }
+  currentChat() { return this.currentId ? this.chats.find(c=>c.id===this.currentId)||null : null; }
+  async saveChats() {
+    this.chats=normalizeChats(this.chats);
+    try {
+      await this.context.workspaceState.update(CHATS_KEY,this.chats);
+      await this.context.workspaceState.update(CURRENT_CHAT_KEY,this.currentId);
+    } catch(e) { this.output.appendLine('Could not save chat history: '+String(e.message||e)); }
+    this.postChats();
+  }
+  postChats() {
+    const chat=this.currentChat();
+    this.post({type:'chats',items:chatSummaries(this.chats,this.currentId)});
+    this.post({type:'chatState',id:this.currentId,title:chat?chat.title:'',temporary:this.temporary,
+      started:this.history.length>0,linked:!!(chat&&chat.copilotUrl)});
+  }
+  resetLive() {
+    this.statusHistory=[]; this.reasoning={blocks:[],answers:[]};
+    this.post({type:'progressHistory',items:[]}); this.post({type:'reasoning',blocks:[],answers:[]});
+  }
+  newChat() {
+    if(this.busy) return;
+    this.currentId=null; this.temporary=null; this.history=[]; this.resetLive();
+    this.post({type:'history',items:[]}); this.saveChats(); this.post({type:'focusPrompt'});
+  }
+  openChat(id) {
+    if(this.busy) return;
+    const chat=this.chats.find(c=>c.id===id);
+    if(!chat) return;
+    this.currentId=chat.id; this.temporary=false; this.history=chat.messages.slice(); this.resetLive();
+    this.post({type:'history',items:this.history}); this.saveChats();
+  }
+  async deleteChat(id) {
+    if(this.busy) return;
+    const chat=this.chats.find(c=>c.id===id);
+    if(!chat) return;
+    const ok=await vscode.window.showWarningMessage(`Delete the chat "${chat.title}" from history? The Copilot conversation itself is not deleted.`,{modal:true},'Delete');
+    if(ok!=='Delete' || this.busy) return;
+    this.chats=this.chats.filter(c=>c.id!==id);
+    if(this.currentId===id){this.currentId=null;this.temporary=null;this.history=[];this.resetLive();this.post({type:'history',items:[]});}
+    await this.saveChats();
+  }
   resolveWebviewView(view) {
     this.view=view;
     const w=view.webview;
@@ -205,11 +294,14 @@ class ChatProvider {
     const n=nonce();
     const css=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.css'));
     const js=w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri,'media','chat.js'));
-    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src data:; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="temporaryChat" title="Enable Copilot Temporary chat before selecting the model"><input id="temporaryChat" type="checkbox" checked> Temporary chat</label><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes... (Enter to run, Shift+Enter for a new line; paste or drop images/files to attach)" required></textarea><div class="attach-bar"><button id="attach" type="button" title="Attach files to the prompt">Attach files...</button><span class="attach-hint">Paste an image, or drag and drop images/files here (hold Shift while dropping).</span></div><ul id="attachments" class="attachments" aria-label="Attached files" hidden></ul><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div><div id="reasoning" class="reasoning" aria-label="Live response" hidden><div id="reasoningBlocks" class="reasoning-blocks" aria-live="polite"></div></div></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
+    w.html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src data:; script-src 'nonce-${n}';"><link rel="stylesheet" href="${css}"><title>Repo Round-Trip</title></head><body><main><header><strong>Repository Round-Trip</strong><div class="header-controls"><label for="model">Model</label><div class="model-combo" id="modelCombo"><input id="model" type="text" value="GPT/GPT-6" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-controls="modelList" title="Choose a model or type any provider/model, e.g. GPT/GPT-6"><button id="modelToggle" type="button" tabindex="-1" aria-label="Show model choices" aria-haspopup="listbox" aria-expanded="false">&#9662;</button><ul id="modelList" role="listbox" aria-label="Models" hidden><li id="modelOpt0" role="option" data-value="GPT/GPT-6">GPT/GPT-6</li><li id="modelOpt1" role="option" data-value="Claude/Opus 5.5">Claude/Opus 5.5</li></ul></div><label class="browser-choice" for="temporaryChat" title="Enable Copilot Temporary chat before selecting the model"><input id="temporaryChat" type="checkbox" checked> Temporary chat</label><label class="browser-choice" for="showBrowser"><input id="showBrowser" type="checkbox"> Show browser</label><button id="login" type="button">Sign in</button><button id="finishLogin" type="button" hidden>Finish sign in</button></div></header><p class="hint">Prompts modify the current workspace Git repository using Copilot Chat. No inline code suggestions.</p><div class="chat-bar"><span id="chatTitle" class="chat-title">New chat</span><button id="newChat" type="button" title="Start a new chat">New chat</button><button id="historyToggle" type="button" aria-expanded="false" aria-controls="historyPanel" title="Show chat history">History</button></div><section id="historyPanel" class="history-panel" aria-label="Chat history" hidden><strong>Chat history</strong><p id="historyEmpty" class="history-empty">No saved chats yet. Chats run with Temporary chat off are kept here.</p><ul id="historyList" class="history-list"></ul></section><section id="messages" role="log" aria-live="polite"></section><form id="form"><label for="prompt">What should change?</label><textarea id="prompt" rows="4" placeholder="Describe the repository changes... (Enter to run, Shift+Enter for a new line; paste or drop images/files to attach)" required></textarea><div class="attach-bar"><button id="attach" type="button" title="Attach files to the prompt">Attach files...</button><span class="attach-hint">Paste an image, or drag and drop images/files here (hold Shift while dropping).</span></div><ul id="attachments" class="attachments" aria-label="Attached files" hidden></ul><div class="actions"><button id="send" type="submit">Modify repository</button><button id="cancel" type="button" disabled>Cancel</button></div></form><section id="progress" aria-label="Execution progress"><strong>Execution activity</strong><div id="activityLine" role="status" aria-live="polite"><span id="activitySpinner" class="spinner" aria-hidden="true" hidden></span><span id="activityText">Idle</span></div><div id="reasoning" class="reasoning" aria-label="Live response" hidden><div id="reasoningBlocks" class="reasoning-blocks" aria-live="polite"></div></div></section></main><script nonce="${n}" src="${js}"></script></body></html>`;
     w.onDidReceiveMessage(async m=>{
       if(m.type==='ready') this.refresh();
       if(m.type==='login') await vscode.commands.executeCommand('copilotRoundtrip.login');
       if(m.type==='finishLogin') this.finishLogin();
+      if(m.type==='newChat') this.newChat();
+      if(m.type==='openChat' && typeof m.id==='string') this.openChat(m.id);
+      if(m.type==='deleteChat' && typeof m.id==='string') await this.deleteChat(m.id);
       if(m.type==='run') await this.run(m.prompt,m.model,m.showBrowser,m.attachments,m.temporaryChat);
       if(m.type==='pickAttachments') await this.pickAttachments();
       if(m.type==='attachUris' && Array.isArray(m.uris)) this.attachUris(m.uris);
@@ -227,7 +319,7 @@ class ChatProvider {
   }
   refresh() {
     this.post({type:'busy',value:this.busy});
-    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'reasoning',blocks:this.reasoning.blocks,answers:this.reasoning.answers}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'temporaryChat',value:config().temporaryChat}); this.post({type:'loginActive',value:!!this.loginProc});
+    this.post({type:'history',items:this.history}); this.post({type:'progressHistory',items:this.statusHistory}); this.post({type:'reasoning',blocks:this.reasoning.blocks,answers:this.reasoning.answers}); this.post({type:'model',value:config().model}); this.post({type:'showBrowser',value:config().showBrowser}); this.post({type:'temporaryChat',value:config().temporaryChat}); this.post({type:'loginActive',value:!!this.loginProc}); this.postChats();
   }
   async openResult(p) {
     // Only open ZIPs emitted by successful runs, never arbitrary paths from the webview.
@@ -295,12 +387,26 @@ class ChatProvider {
     cfg.model=typeof model==='string' ? model.trim() : '';
       if(!/^[^/\s]+\/[^/]+$/.test(cfg.model)) { this.updateProgress('error','Enter a model as provider/model (for example GPT/GPT-6).'); return; }
       cfg.showBrowser=showBrowser===true;
-      cfg.temporaryChat=temporaryChat!==false;
+    // The first prompt decides whether the conversation is temporary (not saved) or a saved chat.
+    // Every later prompt of a saved chat continues the same Copilot conversation in the web UI.
+    let chat=this.currentChat();
+    if(!chat && this.temporary===null) this.temporary=temporaryChat!==false;
+    if(!chat && this.temporary===false) {
+      chat={id:`${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`,title:chatTitle(prompt),created:Date.now(),updated:Date.now(),repo,model:cfg.model,copilotUrl:'',messages:this.history.map(savedMessage)};
+      this.chats.unshift(chat); this.currentId=chat.id;
+    }
+    cfg.temporaryChat=!chat;
+    cfg.chatUrl=chat&&chat.copilotUrl?chat.copilotUrl:'';
+    const continuing=!!cfg.chatUrl;
     const script=path.join(this.context.extensionPath,'scripts','copilot_repo_roundtrip.py');
     this.busy=true; this.cancelRequested=false; this.statusHistory=[]; this.updateReasoning({blocks:[],answers:[]}); this.post({type:'progressHistory',items:[]}); this.post({type:'busy',value:true}); this.updateProgress('starting','Starting Copilot repository round-trip...');
     const attachmentNames=(Array.isArray(attachments)?attachments:[]).filter(a=>a&&typeof a==='object').map(a=>String(a.name||(a.path?path.basename(a.path):'file')));
     const userItem={role:'user',text:prompt,attachments:attachmentNames};
     this.post({type:'message',item:userItem});
+    if(chat && !continuing && chat.messages.some(x=>x.role==='user')) this.output.appendLine('No Copilot chat link was recorded for this chat yet; a new Copilot conversation is started for it.');
+    if(chat){chat.messages.push(savedMessage(userItem));chat.updated=Date.now();chat.model=cfg.model;await this.saveChats();}
+    else this.postChats();
+    if(continuing) this.updateProgress('chat','Continuing the saved Copilot chat; the current repository state is attached again.');
     this.output.appendLine(`\n=== Repository: ${repo} ===\nRequest: ${prompt}\n`);
     let stdout='',stderr='', cancelled=false, statusBuffer='', attachDir=null;
     try {
@@ -324,6 +430,8 @@ class ChatProvider {
               // Reasoning and live-answer updates are frequent; show them live without flooding logs or errors.
               const reasoning=parseLiveLine(line);
               if(reasoning){this.updateReasoning(reasoning);continue;}
+              const chatUrl=parseChatLine(line);
+              if(chatUrl){this.output.appendLine('Copilot chat: '+chatUrl);if(chat&&chat.copilotUrl!==chatUrl){chat.copilotUrl=chatUrl;this.saveChats();}continue;}
               stderr+=line+'\n';this.output.appendLine(line);
               const status=parseStatusLine(line);
               if(status) this.updateProgress(status.stage,status.message);
@@ -334,20 +442,23 @@ class ChatProvider {
         child.on('close',(code,signal)=>{if(statusBuffer.trim()){const reasoning=parseLiveLine(statusBuffer);if(reasoning)this.updateReasoning(reasoning);else{stderr+=statusBuffer;this.output.appendLine(statusBuffer);const last=parseStatusLine(statusBuffer);this.updateProgress(last?.stage||'log',last?.message||statusBuffer.trim());}}cancelled=this.cancelRequested||signal!==null;code===0?resolve():reject(new Error(cancelled?'Run cancelled.':`Script exited with code ${code}. ${stderr.trim() || stdout.trim()}`));});
       });
       const result=parseResult(stdout);
+      if(chat && typeof result.chat_url==='string' && /^https:\/\//i.test(result.chat_url)) chat.copilotUrl=result.chat_url;
       const item={role:'assistant',repo,text:result.chat_response || 'Repository modification completed.',diffStat:result.diff_stat || '',gitStatus:result.status || ''};
       this.history.push(userItem,{...item});
+      if(chat){chat.messages.push(savedMessage(item));chat.updated=Date.now();await this.saveChats();}
       this.post({type:'message',item});
       this.updateProgress('completed','Completed. Review the Git diff.');
       vscode.window.showInformationMessage('Repository round-trip completed. Review your changes.');
     } catch(e) {
       const msg=String(e.message||e);
       this.history.push(userItem,{role:'error',text:msg});
+      if(chat){chat.messages.push(savedMessage({role:'error',text:msg}));chat.updated=Date.now();await this.saveChats();}
       this.post({type:'message',item:{role:'error',text:msg}});
       this.updateProgress('failed',msg);
     } finally {
       if(attachDir) { try { fs.rmSync(attachDir,{recursive:true,force:true}); } catch (_) { /* best effort */ } }
       clearTimeout(this.cancelTimer);this.cancelTimer=null;this.cancelRequested=false;
-      this.proc=null;this.busy=false;this.post({type:'busy',value:false});
+      this.proc=null;this.busy=false;this.post({type:'busy',value:false});this.postChats();
     }
   }
 }
@@ -356,6 +467,8 @@ function activate(context) {
   const provider=new ChatProvider(context,output);
   context.subscriptions.push(output,vscode.window.registerWebviewViewProvider('copilotRoundtrip.chat',provider,{webviewOptions:{retainContextWhenHidden:true}}));
   context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.open',()=>vscode.commands.executeCommand('workbench.view.extension.copilotRoundtrip')));
+  context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.newChat',()=>provider.newChat()));
+  context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.showHistory',()=>provider.post({type:'toggleHistory'})));
   context.subscriptions.push(vscode.commands.registerCommand('copilotRoundtrip.login',async ()=>{
     if(provider.loginProc || provider.busy) return;
     const cfg=config(),script=path.join(context.extensionPath,'scripts','copilot_repo_roundtrip.py');
@@ -386,4 +499,4 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(()=>provider.refresh()));
 }
 function deactivate() {}
-module.exports={activate,deactivate,parseResult,parseStatusLine,parseReasoningLine,parseLiveLine,buildArgs,resolveChangedPath,materializeAttachments,safeAttachmentName};
+module.exports={activate,deactivate,parseResult,parseStatusLine,parseReasoningLine,parseLiveLine,parseChatLine,chatTitle,normalizeChats,chatSummaries,buildArgs,resolveChangedPath,materializeAttachments,safeAttachmentName};

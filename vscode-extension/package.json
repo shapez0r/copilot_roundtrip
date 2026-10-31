@@ -39,8 +39,32 @@
       {
         "command": "copilotRoundtrip.open",
         "title": "Repo Round-Trip: Open Chat"
+      },
+      {
+        "command": "copilotRoundtrip.newChat",
+        "title": "Repo Round-Trip: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "copilotRoundtrip.showHistory",
+        "title": "Repo Round-Trip: Show Chat History",
+        "icon": "$(history)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "copilotRoundtrip.newChat",
+          "when": "view == copilotRoundtrip.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "copilotRoundtrip.showHistory",
+          "when": "view == copilotRoundtrip.chat",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "configuration": {
       "title": "Repo Round-Trip",
       "properties": {
@@ -88,7 +112,7 @@
         "copilotRoundtrip.temporaryChat": {
           "type": "boolean",
           "default": true,
-          "description": "Enable Copilot Temporary chat before selecting the model (initial state of the sidebar checkbox)."
+          "description": "Enable Copilot Temporary chat before selecting the model (initial state of the sidebar checkbox for new chats). Temporary chats are not kept in chat history; chats run with Temporary chat off are saved and continue the same Copilot chat."
         }
       }
     }

@@ -259,9 +259,13 @@
     if(m.type==='model' && !$('model').dataset.initialized){$('model').value=m.value||'GPT/GPT-6';$('model').dataset.initialized='true';}
     if(m.type==='loginActive'){$('finishLogin').hidden=!m.value;$('login').disabled=m.value;activity.login=!!m.value;renderActivity();}
       if(m.type==='showBrowser' && !$('showBrowser').dataset.initialized){$('showBrowser').checked=!!m.value;$('showBrowser').dataset.initialized='true';}
-      if(m.type==='temporaryChat' && !$('temporaryChat').dataset.initialized){$('temporaryChat').checked=m.value!==false;$('temporaryChat').dataset.initialized='true';}
+      if(m.type==='temporaryChat' && !$('temporaryChat').dataset.initialized){tempPref=m.value!==false;$('temporaryChat').dataset.initialized='true';syncTemporary();}
+      if(m.type==='chats'){chats=Array.isArray(m.items)?m.items:[];renderHistory();}
+      if(m.type==='chatState'){chatState=m;renderChatState();renderHistory();}
+      if(m.type==='toggleHistory')setHistoryOpen($('historyPanel').hidden);
+      if(m.type==='focusPrompt'&&!prompt.disabled)prompt.focus();
       if(m.type==='history'){messages.replaceChildren();m.items.forEach(add);}
-    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning,lastAnswers);$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;$('temporaryChat').disabled=m.value;renderAttachments();}
+    if(m.type==='busy'){ activity.busy=!!m.value;renderActivity();renderReasoning(lastReasoning,lastAnswers);$('send').disabled=m.value;$('cancel').disabled=!m.value;prompt.disabled=m.value;$('model').disabled=m.value;modelToggle.disabled=m.value;if(m.value)setModelOpen(false);$('showBrowser').disabled=m.value;syncTemporary();$('newChat').disabled=m.value;renderHistory();renderAttachments();}
     if(m.type==='progressHistory'){
       const last=m.items[m.items.length-1];
       activity.message=last?last.message:'';renderActivity();
@@ -390,6 +394,55 @@
     form.requestSubmit($('send'));
   });
   $('cancel').addEventListener('click',()=>vscode.postMessage({type:'cancel'}));
+  // Chat history, like a coding assistant's chat history: New chat, and a History list of saved chats
+  // (chats run with Temporary chat off). Every prompt of a saved chat continues the same Copilot chat.
+  // The Temporary chat choice belongs to a conversation: it is set before its first prompt and locked
+  // afterwards (a saved chat stays saved, a temporary session stays temporary) until New chat.
+  let chats=[], chatState={id:null,temporary:null,started:false,linked:false,title:''}, tempPref=true;
+  $('temporaryChat').addEventListener('change',()=>{if(!chatLocked())tempPref=$('temporaryChat').checked;});
+  function chatLocked(){return !!chatState.id||!!chatState.started;}
+  function syncTemporary(){
+    const box=$('temporaryChat'), locked=chatLocked();
+    box.checked=chatState.id?false:locked&&chatState.temporary!==null?!!chatState.temporary:tempPref;
+    box.disabled=activity.busy||locked;
+    box.parentElement.title=locked?'Fixed for this chat. Start a New chat to change it.':'Enable Copilot Temporary chat before selecting the model (temporary chats are not saved in History)';
+  }
+  function renderChatState(){
+    const t=$('chatTitle');
+    t.textContent=chatState.id?(chatState.title||'Saved chat'):chatState.started&&chatState.temporary?'Temporary chat (not saved)':'New chat';
+    t.title=chatState.id?(chatState.linked?'Saved chat: prompts continue the same Copilot chat':'Saved chat: the Copilot chat link is recorded after the first prompt'):t.textContent;
+    syncTemporary();
+  }
+  function formatWhen(ms){
+    if(!ms)return '';
+    const d=new Date(ms), now=new Date();
+    return d.toDateString()===now.toDateString()?d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString();
+  }
+  function setHistoryOpen(open){
+    $('historyPanel').hidden=!open;$('historyToggle').setAttribute('aria-expanded',String(open));
+    $('historyToggle').title=open?'Hide chat history':'Show chat history';
+    if(open)renderHistory();
+  }
+  function renderHistory(){
+    const list=$('historyList');
+    list.replaceChildren();
+    $('historyEmpty').hidden=chats.length>0;
+    for(const c of chats){
+      const li=document.createElement('li');li.className='history-item'+(c.id===chatState.id?' active':'');
+      const open=document.createElement('button');open.type='button';open.className='history-open';open.disabled=activity.busy;
+      if(c.id===chatState.id)open.setAttribute('aria-current','true');
+      const meta=[formatWhen(c.updated),c.prompts+(c.prompts===1?' prompt':' prompts'),c.model].filter(Boolean).join(' \u00b7 ');
+      open.append(span('history-title',c.title),span('history-meta',meta));
+      open.title=c.linked?'Open this chat; new prompts continue the same Copilot chat':'Open this chat';
+      open.addEventListener('click',()=>{vscode.postMessage({type:'openChat',id:c.id});setHistoryOpen(false);});
+      const del=document.createElement('button');del.type='button';del.className='history-delete';del.textContent='\u00d7';del.disabled=activity.busy;
+      del.setAttribute('aria-label','Delete chat '+c.title);del.title='Delete from history';
+      del.addEventListener('click',()=>vscode.postMessage({type:'deleteChat',id:c.id}));
+      li.append(open,del);list.append(li);
+    }
+  }
+  $('newChat').addEventListener('click',()=>{vscode.postMessage({type:'newChat'});setHistoryOpen(false);});
+  $('historyToggle').addEventListener('click',()=>setHistoryOpen($('historyPanel').hidden));
   $('login').addEventListener('click',()=>vscode.postMessage({type:'login'}));
     $('finishLogin').addEventListener('click',()=>vscode.postMessage({type:'finishLogin'}));
   vscode.postMessage({type:'ready'});

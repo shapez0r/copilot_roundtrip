@@ -60,6 +60,14 @@ python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Match the layou
 
 Attached files are uploaded after the repository archive and mentioned in the prompt as context; they are not added to the repository.
 
+To continue a saved (non-temporary) Copilot chat, pass the `chat_url` printed by an earlier run with `--no-temporary-chat`:
+
+```powershell
+python .\vscode-extension/scripts/copilot_repo_roundtrip.py fix "Also update the tests" --repo "C:\path\to\repository" --chat-url "https://m365.cloud.microsoft/chat/..."
+```
+
+The follow-up is sent in that same Copilot chat. Because Copilot's sandbox is erased between prompts, the current committed repository state is archived and attached again for every prompt, and the follow-up prompt tells Copilot that this archive supersedes earlier ones. Reasoning, answers and download links of earlier turns are ignored, so only the new response's ZIP is applied. If the saved chat cannot be reopened, the run fails instead of starting a different chat.
+
 While a fix runs, press `Q` in the terminal to quit: once the prompt has been submitted, the script first clicks **Stop** on the Copilot response and only then closes the browser and exits (exit code 130) without changing the repository. The Stop button selector can be overridden with `COPILOT_STOP`.
 
 The tool requires a clean working tree by default. `--allow-dirty` bypasses this check, but the uploaded snapshot is still made from `HEAD`, **not** from uncommitted or untracked changes.
@@ -105,6 +113,7 @@ For `fix`, options include:
 - `--allow-dirty` — allow a dirty worktree (use with caution).
 - `--no-temporary-chat` — do not enable Copilot **Temporary chat**. By default, Temporary chat is enabled before the model is selected (enabling it resets the model selection) (`--temporary-chat`).
 - `--attach PATH` — additional file or picture to attach to the prompt; repeat for several files.
+- `--chat-url URL` — continue the saved Copilot chat at this URL (the `chat_url` of a previous run); implies `--no-temporary-chat`. Runs with Temporary chat off report the chat URL as `ROUNDTRIP_CHAT:` JSON lines on stderr and as `chat_url` in the final JSON.
 
 Use `python vscode-extension/scripts/copilot_repo_roundtrip.py --help` and `python vscode-extension/scripts/copilot_repo_roundtrip.py fix --help` for the CLI help.
 

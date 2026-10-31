@@ -18,6 +18,16 @@ BASE_PROMPT = (
     "then return the complete fixed repository as a downloadable ZIP file. "
     "Do not include a .git directory. To fix: {request}"
 )
+# Follow-up prompts in a saved (non-temporary) chat continue the same Copilot conversation. The
+# Copilot sandbox is erased between prompts, so every prompt supplies the current repository state.
+FOLLOWUP_PROMPT = (
+    "Here is the current state of my repository archive for this follow-up request. It supersedes any "
+    "earlier archive in this chat (your sandbox was reset, so earlier files are no longer available). "
+    "The attached .txt file contains ZIP bytes. "
+    "Rename it to .zip and extract it. Make only the requested fixes, preserve all other files, "
+    "then return the complete fixed repository as a downloadable ZIP file. "
+    "Do not include a .git directory. To fix: {request}"
+)
 
 
 ATTACHMENTS_NOTE = (
@@ -37,6 +47,34 @@ def resolve_attachments(paths):
         if path not in result:
             result.append(path)
     return result
+
+
+CHAT_PREFIX = "ROUNDTRIP_CHAT:"
+
+
+def emit_chat(url):
+    """Report the saved Copilot chat URL so later prompts can continue the same conversation."""
+    print(CHAT_PREFIX + json.dumps({"url": url}), file=sys.stderr, flush=True)
+
+
+def validate_chat_url(url):
+    """A chat to continue must be an https Copilot conversation URL."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url or "")
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise SystemExit(f"Invalid --chat-url (an https Copilot chat URL is required): {url}")
+    return url
+
+
+def conversation_url(current, base):
+    """The page URL once Copilot has created a saved conversation, or None while it is still the start page."""
+    from urllib.parse import urlparse
+    cur, start = urlparse(current or ""), urlparse(base or "")
+    if cur.scheme != "https" or not cur.netloc or cur.netloc != start.netloc:
+        return None
+    if (cur.path.rstrip("/"), cur.query, cur.fragment) == (start.path.rstrip("/"), start.query, start.fragment):
+        return None
+    return current
 
 
 def emit_status(stage, message):
@@ -333,8 +371,12 @@ SCREEN_SCRIPT = r"""
   let heads = customHeads || Array.from(document.querySelectorAll('button, [role="button"], summary, [aria-expanded]'));
   const headTitle = h => textOf(h).split('\n')[0].replace(/[\s>\u203a\u00bb\u2304\u2335\u02c5\u25be\u25b8]+$/, '').trim();
   const chrome = 'form, nav, header, footer, [role="toolbar"], [role="menu"], [role="menubar"], [role="dialog"], [role="tablist"]';
+  // Elements of earlier turns (marked before this prompt was sent) belong to previous answers.
+  const prior = el => el.hasAttribute('data-roundtrip-prior') ||
+    !!(el.parentElement && el.parentElement.closest('[data-roundtrip-prior-msg]'));
   heads = heads.filter(h => {
     const t = textOf(h);
+    if (prior(h)) return false;
     if (!visible(h) || !t || t.length > 120) return false;
     if (customHeads) return true;
     if (titleRe.test(t)) return true;
@@ -423,7 +465,8 @@ SCREEN_SCRIPT = r"""
     for (const s of args.assistant || []) {
       try { found.push(...Array.from(document.querySelectorAll(s))); } catch (_) { /* invalid selector */ }
     }
-    found = outermost(Array.from(new Set(found)).filter(n => visible(n) && textOf(n)))
+    found = outermost(Array.from(new Set(found)).filter(n => visible(n) && textOf(n) &&
+      !n.closest('[data-roundtrip-prior-msg]')))
       .sort((a, b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
     // The current turn: the outermost ancestor of the latest reasoning header that excludes the user's prompt.
     const snippet = norm(args.prompt).slice(0, 60);
@@ -432,7 +475,9 @@ SCREEN_SCRIPT = r"""
       let el = heads[heads.length - 1].parentElement;
       while (el && el.parentElement && el.parentElement !== document.body &&
              !norm(textOf(el.parentElement)).includes(snippet)) el = el.parentElement;
-      if (el && !norm(textOf(el)).includes(snippet)) region = el;
+      // In a continued chat the region must not reach into earlier turns.
+      if (el && !norm(textOf(el)).includes(snippet) && !el.querySelector('[data-roundtrip-prior-msg]') &&
+          !el.closest('[data-roundtrip-prior-msg]')) region = el;
     }
     let turnNodes = region ? found.filter(n => region.contains(n) || n.contains(region)) : [];
     if (!turnNodes.length && found.length) turnNodes = [found[found.length - 1]];
@@ -501,6 +546,39 @@ SCREEN_SCRIPT = r"""
   return {signature: text.length + ':' + hash, blocks, answers};
 }
 """
+
+
+# Marks the messages, controls and download links already on screen before a prompt is sent, so a
+# continued chat never mistakes an earlier turn's reasoning, answer or download for the new one.
+MARK_PRIOR_SCRIPT = r"""
+(args) => {
+  let n = 0;
+  for (const s of args.messages) {
+    try { document.querySelectorAll(s).forEach(el => { el.setAttribute('data-roundtrip-prior-msg', '1'); n++; }); }
+    catch (_) { /* invalid selector */ }
+  }
+  document.querySelectorAll('button, a, [role="button"], summary, [aria-expanded]')
+    .forEach(el => el.setAttribute('data-roundtrip-prior', '1'));
+  return n;
+}
+"""
+
+
+def mark_prior_output(page):
+    "Mark earlier turns; returns the number of earlier assistant messages found (0 on failure)."
+    try:
+        return int(page.evaluate(MARK_PRIOR_SCRIPT, {"messages": list(ASSISTANT_SELECTORS)}) or 0)
+    except Exception:
+        return 0
+
+
+def is_prior(node):
+    "True for elements that were already on screen before this prompt was sent."
+    try:
+        return bool(node.evaluate("e => e.hasAttribute('data-roundtrip-prior') || "
+                                  "!!e.closest('[data-roundtrip-prior-msg]')"))
+    except Exception:
+        return False
 
 
 def read_screen(page, sel, prompt=""):
@@ -1065,6 +1143,8 @@ def read_chat_response(page):
             nodes = page.locator(selector)
             for i in range(nodes.count() - 1, -1, -1):
                 node = nodes.nth(i)
+                if is_prior(node):
+                    continue  # earlier turn of a continued chat
                 if node.is_visible():
                     text = node.inner_text(timeout=3000).strip()
                     if text:
@@ -1077,6 +1157,9 @@ def read_chat_response(page):
 def cmd_fix(args):
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
     parse_model(args.model)
+    if getattr(args, "chat_url", None):
+        validate_chat_url(args.chat_url)
+        args.temporary_chat = False  # a continued chat is always a saved chat
     args.attachments = resolve_attachments(args.attach)
     if start_quit_listener():
         print("Press Q at any time to stop the Copilot response and quit.", file=sys.stderr, flush=True)
@@ -1100,7 +1183,11 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
     emit_status("archiving", "Creating committed repository archive...")
     source_hash, count = make_archive(root, source_txt)
     emit_status("archiving", f"Archive ready ({count} entries).")
-    prompt = BASE_PROMPT.format(request=args.request.strip())
+    chat_url = getattr(args, "chat_url", None)
+    continuing = bool(chat_url)
+    # A saved chat is only created when Temporary chat is off; its URL is reported for follow-ups.
+    track_chat = continuing or not args.temporary_chat
+    prompt = (FOLLOWUP_PROMPT if continuing else BASE_PROMPT).format(request=args.request.strip())
     attachments = getattr(args, "attachments", None) or []
     if attachments:
         prompt += ATTACHMENTS_NOTE.format(names=", ".join(a.name for a in attachments))
@@ -1114,11 +1201,21 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         submitted = False
         try:
-            emit_status("browser", "Opening Copilot Chat...")
-            page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
-            wait_for_ui(page)
+            if continuing:
+                emit_status("browser", "Reopening the saved Copilot chat...")
+                page.goto(chat_url, wait_until="domcontentloaded", timeout=120000)
+                wait_for_ui(page)
+                if conversation_url(page.url, args.url) is None:
+                    raise SystemExit("The saved Copilot chat could not be reopened (Copilot showed a new chat "
+                                     "instead). Start a new chat in the extension.")
+                emit_status("browser", "Continuing the saved Copilot chat.")
+            else:
+                emit_status("browser", "Opening Copilot Chat...")
+                page.goto(args.url, wait_until="domcontentloaded", timeout=120000)
+                wait_for_ui(page)
             # Temporary chat must be enabled first: switching to it resets the model selection.
-            if args.temporary_chat:
+            # A continued chat is a saved chat, so Temporary chat is never enabled for it.
+            if args.temporary_chat and not continuing:
                 emit_status("temporary", "Enabling Temporary chat...")
                 enable_temporary_chat(page, sel)
                 emit_status("temporary", "Temporary chat enabled.")
@@ -1135,10 +1232,27 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
             composer = page.locator(sel["composer"]).last
             composer.wait_for(state="visible", timeout=60000)
             composer.fill(prompt)
+            # Earlier turns of a continued chat must not be read as this prompt's response.
+            prior_messages = mark_prior_output(page)
+            prior_keys = set()
+            if continuing:
+                old_links = page.locator(sel["download"])
+                for i in range(old_links.count()):
+                    try:
+                        href = old_links.nth(i).get_attribute("href", timeout=2000) or ""
+                    except Exception:
+                        continue
+                    if href:
+                        prior_keys.add(href)
+                emit_status("prompt", f"Continuing after {prior_messages} earlier Copilot message(s).")
             emit_status("prompt", "Submitting request to Copilot...")
             # From here on a response may be running: a quit must click Stop before exiting.
             submitted = True
             send_with_retry(page, composer, sel["send"])
+            reported_url = None
+            if continuing:
+                reported_url = conversation_url(page.url, args.url) or chat_url
+                emit_chat(reported_url)
             emit_status("waiting", "Waiting for Copilot to generate a downloadable repository...")
             # The timeout is an inactivity timeout: it only runs while nothing new appears on screen
             # (reasoning or response text). Any new output restarts it.
@@ -1153,6 +1267,12 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
             while downloaded is None:
                 raise_if_quit()
                 now = time.monotonic()
+                # A new saved chat gets its own URL once Copilot accepts the first prompt.
+                if track_chat:
+                    current_url = conversation_url(page.url, args.url)
+                    if current_url and current_url != reported_url:
+                        reported_url = current_url
+                        emit_chat(current_url)
                 signature, blocks, answers = read_screen(page, sel, prompt)
                 if signature is not None and signature != last_signature:
                     if last_signature is not None:
@@ -1176,11 +1296,14 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 candidates = page.locator(sel["download"])
                 for i in range(candidates.count() - 1, -1, -1):
                     node = candidates.nth(i)
+                    if is_prior(node):
+                        continue  # download link of an earlier turn
                     try:
-                        key = (node.get_attribute("href") or "") + (node.inner_text(timeout=2000) or "")
+                        href = node.get_attribute("href") or ""
+                        key = href + (node.inner_text(timeout=2000) or "")
                     except Exception:
                         continue
-                    if key in seen:
+                    if key in seen or (href and href in prior_keys):
                         continue
                     seen.add(key)
                     try:
@@ -1209,6 +1332,11 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 if final_live != (live_blocks, live_answers):
                     live_blocks, live_answers = final_live
                     emit_reasoning(live_blocks, live_answers)
+            if track_chat:
+                current_url = conversation_url(page.url, args.url)
+                if current_url and current_url != reported_url:
+                    reported_url = current_url
+                    emit_chat(current_url)
             chat_response = strip_speaker_label(read_chat_response(page))
             live_text = "\n\n".join(a["text"] for a in live_answers)
             if len(chat_response) < len(live_text):
@@ -1243,7 +1371,7 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
     emit_status("completed", "Repository changes applied successfully.")
     print(json.dumps({"repo": str(root), "source_files": count, "result": "",
                       "backup": "", "status": status, "diff_stat": diff,
-                      "chat_response": chat_response}, indent=2))
+                      "chat_response": chat_response, "chat_url": reported_url or ""}, indent=2))
 
 
 def main():
@@ -1268,6 +1396,9 @@ def main():
                     help="Enable Copilot Temporary chat before selecting the model (default: enabled)")
     fp.add_argument("--no-temporary-chat", dest="temporary_chat", action="store_false",
                     help="Do not enable Temporary chat")
+    fp.add_argument("--chat-url", default=None, metavar="URL",
+                    help="Continue the saved Copilot chat at this URL (from a previous run's chat_url); "
+                         "implies --no-temporary-chat. The current repository archive is attached again.")
     fp.add_argument("--attach", action="append", default=[], metavar="PATH",
                     help="Additional file (e.g. a picture) to attach to the prompt; repeat for several files")
     fp.set_defaults(fn=cmd_fix)
