@@ -354,6 +354,12 @@ async (args) => {
   const textOf = el => (el && (el.innerText || el.textContent) || '').trim();
   const prior = el => el.hasAttribute('data-roundtrip-prior') ||
     !!(el.parentElement && el.parentElement.closest('[data-roundtrip-prior-msg]'));
+  const inCurrentAssistant = el => (args.assistant || []).some(selector => {
+    try {
+      const root = el.closest(selector);
+      return !!root && !root.closest('[data-roundtrip-prior-msg]');
+    } catch (_) { return false; }
+  });
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const inWorkingSteps = control => {
     for (let el = control.parentElement, depth = 0; el && depth < 12; el = el.parentElement, depth++) {
@@ -457,11 +463,12 @@ async (args) => {
     if (!visible(h) || !t || t.length > 120) return false;
     if (customHeads) return true;
     if (titleRe.test(t)) return true;
-    // Standalone activity controls are not a working timeline.
     const expandable = h.tagName === 'SUMMARY' || h.hasAttribute('aria-expanded') || !!h.querySelector('[aria-expanded]');
     let inChrome = false;
     try { inChrome = !!h.closest(chrome); } catch (_) { inChrome = false; }
-    return expandable && !inChrome && inWorkingSteps(h) && stepRe.test(headTitle(h));
+    // GPT responses can expose activity as a standalone control without a task or timeline wrapper.
+    return expandable && !inChrome && stepRe.test(headTitle(h)) &&
+      (inWorkingSteps(h) || inCurrentAssistant(h));
   });
   // Keep the outermost header when several nested elements match the same title.
   heads = heads.filter(h => !heads.some(o => o !== h && o.contains(h)));
@@ -572,7 +579,7 @@ async (args) => {
   heads = heads.filter(h => !plainHeads.has(h) || contentEl(h));
   markOutside();
   await verifySections();
-  // Expand nested prose steps, but never coding panels.
+  // Expand step panels before reading them; code blocks remain excluded from streamed output.
   for (const h of heads) {
     const title = headTitle(h);
     if (expandedState(h) === 'false' && h.dataset.roundtripExpanded !== title) {
@@ -588,7 +595,7 @@ async (args) => {
     if (!panel) continue;
     const toggles = Array.from(panel.querySelectorAll('button, [role="button"], summary, [aria-expanded]'));
     for (const step of toggles) {
-      if (step === h || step.contains(h) || !visible(step) || omitRe.test(headTitle(step))) continue;
+      if (step === h || step.contains(h) || !visible(step)) continue;
       if (expandedState(step) !== 'false') continue;
       // Only short step headings qualify, not arbitrary controls inside a panel.
       const name = headTitle(step);

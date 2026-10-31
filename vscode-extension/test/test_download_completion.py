@@ -288,15 +288,42 @@ class BrowserTests(unittest.TestCase):
         self.assertTrue(blocks[0]['active'])
         self.assertEqual(blocks[0]['steps'][0]['kind'], 'coding')
 
-    def test_standalone_coding_controls_do_not_create_a_timeline(self):
-        self.page.set_content('''<main><p>Do not show working through the steps.</p>
-          <article data-message-author-role="assistant">
-          <details><summary>Coding and executing</summary><pre>secret()</pre></details>
+    def test_standalone_coding_details_are_expanded_and_streamed(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <details id="coding"><summary>Coding and executing</summary><pre>secret()</pre></details>
           <p>Done.</p></article></main>''')
         _, blocks, answers = rt.read_screen(self.page, self.sel)
-        self.assertEqual(blocks, [])
+        self.assertEqual([(block['title'], block['active']) for block in blocks],
+                         [('Coding and executing', True)])
+        self.assertTrue(self.page.locator('#coding').evaluate('element => element.open'))
         self.assertIn('Done.', str(answers))
         self.assertNotIn('secret()', str(answers))
+
+    def test_standalone_coding_button_is_expanded_and_streamed(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <button id="coding" aria-expanded="false" aria-controls="code-panel">Coding and executing</button>
+          <section id="code-panel" hidden><pre>secret()</pre></section>
+          <script>coding.onclick = () => {
+            coding.setAttribute('aria-expanded', 'true');
+            document.getElementById('code-panel').hidden = false;
+          };</script></article></main>''')
+        _, blocks, answers = rt.read_screen(self.page, self.sel)
+        self.assertEqual([(block['title'], block['active']) for block in blocks],
+                         [('Coding and executing', True)])
+        self.assertEqual(self.page.locator('#coding').get_attribute('aria-expanded'), 'true')
+        self.assertNotIn('secret()', str((blocks, answers)))
+
+    def test_nested_coding_control_is_expanded_without_streaming_code(self):
+        self.page.set_content('''<main><article data-message-author-role="assistant">
+          <details open><summary>Reasoning</summary>
+            <details id="coding"><summary>Coding and executing</summary><pre>secret()</pre></details>
+          </details></article></main>''')
+        _, blocks, answers = rt.read_screen(self.page, self.sel)
+        self.assertTrue(self.page.locator('#coding').evaluate('element => element.open'))
+        self.assertEqual(blocks[0]['steps'], [
+            {'title': 'Coding and executing', 'kind': 'coding', 'total': 0, 'lines': []}
+        ])
+        self.assertNotIn('secret()', str((blocks, answers)))
 
     def test_explicit_working_timeline_keeps_coding_steps(self):
         self.page.set_content('''<main><article data-message-author-role="assistant">

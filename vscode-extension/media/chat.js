@@ -110,13 +110,13 @@
     }
     return s;
   }
-  // Show a compact status line until Copilot exposes a structured task card.
+  // Show a compact status line until Copilot exposes structured activity.
   const activity={message:'',busy:false,login:false};
   let lastReasoning=[], lastAnswers=[], lastTasks=[];
   function renderActivity(){
     const running=activity.busy||activity.login;
     $('progress').hidden=!running&&!activity.message&&!lastReasoning.length&&!lastAnswers.length&&!lastTasks.length;
-    $('activityLine').hidden=!!lastTasks.length&&!activity.login;
+    $('activityLine').hidden=!!(lastTasks.length||lastReasoning.length)&&!activity.login;
     const text=$('activityText'), spinner=$('activitySpinner');
     const next=running?(activity.message||'Starting...'):(activity.message||'Idle');
     spinner.hidden=!running;
@@ -326,7 +326,7 @@
     }
     if(m.type==='error'){activity.message=m.text;renderActivity();}
     if(m.type==='tasks'){lastTasks=Array.isArray(m.items)?m.items:[];renderActivity();renderReasoning(lastReasoning,lastAnswers);}
-    if(m.type==='reasoning'){lastReasoning=m.blocks||[];lastAnswers=m.answers||[];renderReasoning(lastReasoning,lastAnswers);}
+    if(m.type==='reasoning'){lastReasoning=m.blocks||[];lastAnswers=m.answers||[];renderActivity();renderReasoning(lastReasoning,lastAnswers);}
     if(m.type==='attached'&&Array.isArray(m.items)){for(const it of m.items)addAttachment(it);}
   });
     // Editable model combobox: pick a preset from the dropdown or type any provider/model.

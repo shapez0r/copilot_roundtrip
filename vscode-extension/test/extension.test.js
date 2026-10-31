@@ -52,3 +52,8 @@ test('webview renders task plans and the working timeline as structured UI', () 
   assert.ok(source.includes("vscode.postMessage({type:'cancel'})"));
   assert.ok(source.includes("stopped?'Task stopped'"));
 });
+test('standalone working activity replaces the compact waiting line', () => {
+  const source = fsT.readFileSync(pathT.join(__dirname, '../media/chat.js'), 'utf8');
+  assert.ok(source.includes("$('activityLine').hidden=!!(lastTasks.length||lastReasoning.length)&&!activity.login"));
+  assert.ok(source.includes("lastAnswers=m.answers||[];renderActivity();renderReasoning"));
+});
