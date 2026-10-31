@@ -312,7 +312,7 @@ def wait_for_ui(page, ms=UI_SETTLE_MS):
 # message's text split at those sections. Code blocks are left out everywhere, and the
 # "Coding and executing" steps (code and its output only) are omitted from the steps.
 SCREEN_SCRIPT = r"""
-(args) => {
+async (args) => {
   const tail = args.tail, custom = args.selector;
   const titleRe = /^\s*(reasoning|reasoned|thinking|thought|thought for)\b/i;
   // Section headers also show the current step name while running ("Creating file",
@@ -336,12 +336,6 @@ SCREEN_SCRIPT = r"""
       return !d.startsWith('inline') && d !== 'contents';
     }
     try { return el.matches(codeSel); } catch (_) { return false; }
-  };
-  const hasCode = el => {
-    if (!el || el.nodeType !== 1) return false;
-    try { if (el.querySelector(codeSel + ', code')) return Array.from(el.querySelectorAll(codeSel + ', code')).some(isCode); }
-    catch (_) { /* fall through */ }
-    return false;
   };
   // Visible text of an element without its code blocks (and without `exclude`, e.g. a <summary>).
   const proseOf = (el, exclude) => {
@@ -407,22 +401,107 @@ SCREEN_SCRIPT = r"""
   };
   const isHead = el => heads.some(h => h === el || el.contains(h));
   // Element holding a (non-<summary>) header's reasoning text.
-  const contentEl = h => {
+  //
+  // Interim answers ("Now the Python scraper changes.") sit right after a "Reasoned for ..." section,
+  // so the element following a section header may be either the section's own content panel or
+  // the next interim answer. Taking the wrong one hid every interim answer (it was treated as the
+  // section's content and skipped), so a candidate is only accepted as content when that is certain:
+  //  - it is linked to the header (aria-controls / aria-labelledby), or
+  //  - it is found next to the header without leaving the header's own wrappers, and it disappears
+  //    when the section is collapsed (checked once per section by collapsing and re-expanding a
+  //    finished section; text that stays visible while the section is collapsed is never content), or
+  //  - for headers without an expanded state, it is a steps card (starts with a step title).
+  const store = window.__roundtripSections || (window.__roundtripSections =
+    {content: new WeakMap(), outside: new WeakSet()});
+  const shows = el => {
+    if (!el || !el.isConnected || !visible(el) || !textOf(el)) return false;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+    const r = el.getBoundingClientRect();
+    return r.height > 1 && r.width > 1;
+  };
+  const linkedEl = h => {
     const ctrl = h.getAttribute('aria-controls') ||
       (h.querySelector('[aria-controls]') || {getAttribute: () => null}).getAttribute('aria-controls');
-    if (ctrl) { const target = document.getElementById(ctrl); if (target) return target; }
-    let el = h;
-    for (let depth = 0; depth < 4 && el; depth++) {
-      const next = el.nextElementSibling;
-      if (next && !isHead(next) && textOf(next)) return next;
-      el = el.parentElement;
+    if (ctrl) { const target = document.getElementById(ctrl.split(/\s+/)[0]); if (target) return target; }
+    const ids = [h.id, ...Array.from(h.querySelectorAll('[id]')).map(e => e.id)].filter(Boolean);
+    for (const id of ids) {
+      try {
+        const target = document.querySelector('[aria-labelledby~="' + CSS.escape(id) + '"]');
+        if (target && target !== h && !h.contains(target) && !target.contains(h)) return target;
+      } catch (_) { /* invalid id */ }
     }
     return null;
+  };
+  // Icons/chevrons next to a header do not end its wrapper; any other element (text, a panel) does.
+  const decorative = el => !/[\p{L}\p{N}]/u.test(textOf(el)) &&
+    (/^(svg|img|i|span|path|use)$/i.test(el.tagName) || !!el.querySelector('svg, img'));
+  // The element following the header's own wrappers (the header plus its icons).
+  const nextCandidate = h => {
+    let el = h;
+    for (let d = 0; d < 4 && el.parentElement && el.parentElement !== document.body; d++) {
+      const parent = el.parentElement;
+      if (Array.from(parent.children).some(c => c !== el && !decorative(c))) break;
+      el = parent;
+    }
+    const next = el.nextElementSibling;
+    return next && !isHead(next) && textOf(next) ? next : null;
+  };
+  const toggleable = h => h.tagName === 'SUMMARY' || expandedState(h) !== null;
+  const firstLine = el => (proseOf(el).split('\n')[0] || '').trim();
+  const stepsCard = el => {
+    const line = firstLine(el);
+    return stepRe.test(line) || titleRe.test(line) && line.length <= 40 && !/[.,:;!?]/.test(line);
+  };
+  const contentEl = h => {
+    const linked = linkedEl(h);
+    if (linked) return linked;
+    const c = nextCandidate(h);
+    if (!c || store.outside.has(c)) return null;
+    if (!toggleable(h)) return stepsCard(c) ? c : null;
+    if (expandedState(h) === 'false') return null;
+    // Once a section's following element was seen to disappear on collapse, the section owns its
+    // panel; a re-rendered panel is a new element, so any later candidate not seen outside counts.
+    if (store.content.has(h)) return c;
+    // A running section is the latest output: what follows it is its own (streaming) content.
+    // Finished sections are verified by verifySections() before being read.
+    return doneRe.test(headTitle(h)) ? null : c;
+  };
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const waitFor = async (test, ms) => {
+    for (let t = 0; t < ms; t += 100) { if (test()) return true; await wait(100); }
+    return test();
+  };
+  // Text visible right after a collapsed finished section is never that section's content.
+  const markOutside = () => {
+    for (const h of heads) {
+      if (h.tagName === 'SUMMARY' || expandedState(h) !== 'false' || !doneRe.test(headTitle(h)) || linkedEl(h)) continue;
+      const c = nextCandidate(h);
+      if (c && shows(c)) store.outside.add(c);
+    }
+  };
+  // For an expanded finished section, collapse it once to see whether the following element
+  // belongs to it (it disappears) or is the next interim answer (it stays), then expand it again.
+  const verifySections = async () => {
+    for (const h of heads) {
+      if (h.tagName === 'SUMMARY' || expandedState(h) !== 'true' || !doneRe.test(headTitle(h)) || linkedEl(h)) continue;
+      const c = nextCandidate(h);
+      if (!c || store.outside.has(c) || store.content.has(h)) continue;
+      try {
+        h.click();
+        const collapsed = await waitFor(() => expandedState(h) === 'false', 600);
+        const hidden = collapsed && await waitFor(() => !shows(c), 1200);
+        if (!collapsed || !hidden) store.outside.add(c); else store.content.set(h, true);
+        if (expandedState(h) === 'false') { h.click(); await waitFor(() => expandedState(h) === 'true', 600); }
+      } catch (_) { store.outside.add(c); }
+    }
   };
   const contentFor = h => {
     if (h.tagName === 'SUMMARY' && h.parentElement) return proseOf(h.parentElement, h);
     return proseOf(contentEl(h));
   };
+  markOutside();
+  await verifySections();
   const blocks = heads.map((h, index) => {
     const title = headTitle(h);
     const expanded = expandedState(h);
@@ -485,12 +564,11 @@ SCREEN_SCRIPT = r"""
     const breaks = new Map(), skip = new Set();
     heads.forEach((h, i) => {
       breaks.set(h.tagName === 'SUMMARY' && h.parentElement ? h.parentElement : h, i);
-      const state = expandedState(h);
-      if (h.tagName !== 'SUMMARY' && state !== 'false') {
+      // Only verified section content is skipped (see contentEl), so a following interim answer
+      // is never mistaken for the section's content.
+      if (h.tagName !== 'SUMMARY') {
         const c = contentEl(h);
-        // Without an explicit expanded state, only a steps card (expanders or code) is skipped, so a
-        // following interim answer is never mistaken for the section's content.
-        if (c && (state === 'true' || hasCode(c) || c.querySelector('[aria-expanded], button, [role="button"]'))) skip.add(c);
+        if (c) skip.add(c);
       }
     });
     const ignored = /^(SCRIPT|STYLE|NOSCRIPT|SVG|BUTTON|TEXTAREA|INPUT|SELECT|TEMPLATE|IFRAME|CANVAS)$/;
