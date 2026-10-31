@@ -341,6 +341,7 @@ class ChatProvider {
     await vscode.env.openExternal(vscode.Uri.file(p));
   }
   updateProgress(stage, message, tasks) {
+    if(this.cancelRequested && stage!=='cancelled') return;
     this.currentStatus = message;
     this.statusHistory.push({stage, message});
     if (this.statusHistory.length > 100) this.statusHistory.shift();
@@ -348,6 +349,7 @@ class ChatProvider {
     if(Array.isArray(tasks)&&!this.cancelRequested){this.tasks=tasks;this.post({type:'tasks',items:this.tasks});}
   }
   updateReasoning(live) {
+    if(this.cancelRequested) return;
     this.reasoning = {blocks: live.blocks || [], answers: live.answers || []};
     this.post({type:'reasoning', blocks:this.reasoning.blocks, answers:this.reasoning.answers});
   }
@@ -381,10 +383,9 @@ class ChatProvider {
   finishLogin() { if(this.loginProc && this.loginProc.stdin.writable) { this.updateProgress('login','Finishing browser sign-in...'); this.loginProc.stdin.write('\n'); } }
   // Keep the stopped task visible while the Python process exits.
   stopCurrentTask(message='The task was cancelled before it could finish.') {
-    if(!this.tasks.length)return false;
-    const last=this.tasks[this.tasks.length-1];
+    const last=this.tasks[this.tasks.length-1] || {title:'Copilot task'};
     this.tasks=[...this.tasks.slice(0,-1),{...last,state:'Task stopped',active:false,steps:[],response:message}];
-    this.reasoning={blocks:[],answers:(this.reasoning.answers||[]).filter(answer=>(Number(answer.after)||0)===0)};
+    this.reasoning={blocks:[],answers:(this.reasoning.answers||[]).filter(answer=>(Number(answer.after)||0)===0 && answer.text.trim()!==message)};
     this.post({type:'tasks',items:this.tasks});this.post({type:'reasoning',blocks:[],answers:this.reasoning.answers});
     return true;
   }
