@@ -126,8 +126,13 @@ def strip_speaker_label(text):
         text = stripped
 
 
-def merge_live(prev_blocks, prev_answers, blocks, answers):
+def merge_live(prev_blocks, prev_answers, blocks, answers, final=False):
     """Keep already streamed output when Copilot re-renders its final message.
+
+    With final=True (the read after the response has finished), the answers on screen are
+    authoritative: the interim answers are exactly the ones the web UI shows at that moment, so
+    earlier placeholders ("Taking a look...") that the web UI replaced are not kept. Previously
+    streamed answers are only kept when the final read finds no answer text at all.
 
     When a response finishes, Copilot collapses the reasoning blocks and re-renders the
     message, so a late read can return empty reasoning lines or only a "Copilot said:" label.
@@ -179,6 +184,8 @@ def merge_live(prev_blocks, prev_answers, blocks, answers):
     for after in list(texts):
         if after not in current and any(texts[after] == t for a, t in current.items() if a != after):
             del texts[after]
+    if final and current:
+        texts = current
     merged_answers = [{"after": after, "text": texts[after]} for after in sorted(texts) if texts[after]]
     return merged_blocks, merged_answers
 
@@ -307,6 +314,20 @@ def stop_generation(page, sel, timeout_seconds=15):
     return clicked
 
 
+def wait_for_response_end(page, sel, timeout_seconds=60):
+    "Wait (bounded) until Copilot's Stop button is gone, i.e. the response has finished rendering."
+    stop = page.locator(sel["stop"])
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            if not any(stop.nth(i).is_visible() for i in range(stop.count())):
+                return True
+        except Exception:
+            return False
+        pause(page, 500)
+    return False
+
+
 def wait_for_ui(page, ms=UI_SETTLE_MS):
     """Let the Copilot UI load properly before interacting with it."""
     emit_status("browser", f"Letting Copilot UI load ({ms / 1000:g}s)...")
@@ -343,6 +364,17 @@ async (args) => {
     const r = el.getBoundingClientRect();
     return (r.width <= 1 || r.height <= 1) && /hidden|clip/.test(cs.overflow || '');
   };
+  // Text that is in the DOM but not shown in the web UI: collapsed panels (zero height with
+  // overflow hidden, kept for the expand animation), fully transparent or content-hidden elements.
+  // Copilot keeps earlier interim answers and collapsed section content this way; reading them
+  // showed stale text ("Taking a look...") instead of what the web UI displays.
+  const notShown = (el, cs) => {
+    if (srOnly(el, cs) || el.hidden || el.hasAttribute('inert') || cs.opacity === '0' ||
+        cs.contentVisibility === 'hidden') return true;
+    if (!/hidden|clip|auto|scroll/.test((cs.overflow || '') + ' ' + (cs.overflowY || '') + ' ' + (cs.overflowX || ''))) return false;
+    const r = el.getBoundingClientRect();
+    return r.height <= 1 || r.width <= 1;
+  };
   // Code blocks (e.g. under "Coding and executing") are not streamed: only the step titles and
   // prose are shown, never the code itself. Inline `code` inside sentences is kept.
   const codeSel = 'pre, [class*="code-block" i], [class*="codeblock" i], [class*="code_block" i]';
@@ -367,7 +399,7 @@ async (args) => {
       if (node === exclude || isCode(node) || skipTags.test(node.tagName.toUpperCase()) ||
           node.getAttribute('aria-hidden') === 'true') return;
       const cs = getComputedStyle(node);
-      if (cs.display === 'none' || cs.visibility === 'hidden' || srOnly(node, cs)) return;
+      if (cs.display === 'none' || cs.visibility === 'hidden' || notShown(node, cs)) return;
       if (node.tagName === 'BR') { out += '\n'; return; }
       // Buttons (e.g. a step's expander) are kept on their own line so step names stay separate.
       const block = !cs.display.startsWith('inline') && cs.display !== 'contents' ||
@@ -613,7 +645,7 @@ async (args) => {
         if (skip.has(el) || isCode(el) || ignored.test(el.tagName.toUpperCase()) || el.getAttribute('role') === 'button' ||
             el.getAttribute('aria-hidden') === 'true') return;
         const cs = getComputedStyle(el);
-        if (cs.display === 'none' || cs.visibility === 'hidden' || srOnly(el, cs)) return;
+        if (cs.display === 'none' || cs.visibility === 'hidden' || notShown(el, cs)) return;
         if (el.tagName === 'BR') { cur.text += '\n'; return; }
         const block = !cs.display.startsWith('inline') && cs.display !== 'contents';
         const keep = pre || /^pre/.test(cs.whiteSpace);
@@ -1564,14 +1596,18 @@ def run_roundtrip(args, root, profile, work, sync_playwright, PlaywrightTimeout)
                 (work / "copilot-timeout.html").write_text(page.content(), encoding="utf-8")
                 ctx.close()
                 raise SystemExit(f"No downloadable result: Copilot showed no new output for {args.timeout}s. Temporary diagnostics were removed with the run directory")
-            # Final snapshot of the finished response, merged so nothing already shown is lost.
+            # Final snapshot of the finished response. The download link can appear before Copilot
+            # has finished writing its final answer, so wait for the response to end first.
             # Read twice: the first read may collapse sections it just finished reading, the second
-            # sees the web UI layout with the interim answers between the collapsed sections.
-            for _attempt in range(2):
-                page.wait_for_timeout(1000)
+            # sees the web UI layout with the interim answers between the collapsed sections. The
+            # final layout replaces the streamed answers so the result matches the web UI.
+            emit_status("waiting", "Download ready; waiting for Copilot to finish its response...")
+            wait_for_response_end(page, sel)
+            for attempt in range(2):
+                pause(page, 1000)
                 _, blocks, answers = read_screen(page, sel, prompt)
                 if blocks is not None:
-                    final_live = merge_live(live_blocks, live_answers, blocks, answers)
+                    final_live = merge_live(live_blocks, live_answers, blocks, answers, final=attempt == 1)
                     if final_live != (live_blocks, live_answers):
                         live_blocks, live_answers = final_live
                         emit_reasoning(live_blocks, live_answers)
