@@ -2,7 +2,7 @@
 
 Experimental Python/Playwright automation that sends a committed Git repository snapshot to Microsoft 365 Copilot Chat, downloads a complete replacement ZIP, and applies it to the local working tree. A VS Code sidebar uses the same Python engine as the command-line tool.
 
-> **Experimental:** The workflow depends on Copilot's browser UI and selectors. Review all changes before committing. It does not commit or push.
+> **Experimental:** The workflow depends on Copilot's and OneDrive's browser UIs and selectors. Review all changes before committing. It does not commit or push.
 
 ## Requirements
 
@@ -74,10 +74,17 @@ Run `python vscode-extension/scripts/copilot_repo_roundtrip.py --help` or append
 2. Run `git archive --format=zip HEAD` and upload the ZIP bytes with a `.zip.txt` filename, followed by optional context attachments.
 3. Open Copilot Chat, configure Temporary chat and model selection, wait for attachment readiness, and submit the request.
 4. Wait for the response to finish before discovering a downloadable ZIP. Activity and task-card updates reset the inactivity timer.
-5. Validate that the returned archive contains files and reject unsafe paths, `.git` entries, and Unix symlinks. A byte-identical returned archive is rejected.
-6. Back up the entire worktree, including untracked files, then replace everything except `.git` with the returned repository. Restore the backup if applying the result fails.
+5. After every submitted prompt ends, whether it succeeded, failed, timed out, or was cancelled, clean up OneDrive in the same signed-in browser before it closes (see [OneDrive cleanup](#onedrive-cleanup)).
+6. Validate that the returned archive contains files and reject unsafe paths, `.git` entries, and Unix symlinks. A byte-identical returned archive is rejected.
+7. Back up the entire worktree, including untracked files, then replace everything except `.git` with the returned repository. Restore the backup if applying the result fails.
 
 **Important:** A returned ZIP is a **full replacement**, not a patch. Files omitted from it are deleted from the worktree, including untracked files. Files excluded from `git archive HEAD` are not uploaded. Backups, downloads, and timeout diagnostics are temporary and deleted at the end of a run, including when `--work-dir` is used. Keep an independent backup of important work.
+
+### OneDrive cleanup
+
+Copilot stores every uploaded archive and attachment in the signed-in account's OneDrive. After each submitted prompt, the engine opens https://kurwalabb-my.sharepoint.com/my (choosing the signed-in account if Microsoft asks), selects every folder in **My files**, deletes them with **Delete** and the confirmation dialog's **Delete**, then opens https://kurwalabb-my.sharepoint.com/recycle and confirms **Empty recycle bin** with **Yes**. Folders are recognized by their folder icon or item count; files in the root of My files are kept.
+
+This permanently removes the uploaded files together with every other folder and recycle-bin item of that account, so use a Copilot account whose OneDrive holds nothing else. Cleanup is best effort: its progress and any failure are reported as `cleanup` status lines, a failure does not fail the run, and anything left behind is removed after a later prompt. Runs that end before a prompt is submitted do not clean up.
 
 The tool reports Git status and diff statistics, but does not verify that Copilot changed only the requested files. From the target repository, review:
 
@@ -152,11 +159,12 @@ npm test
 python -m unittest discover -s test -p "test_*.py"
 ```
 
-Python browser tests require Playwright and Chromium and are skipped if unavailable. Set `ROUNDTRIP_TEST_CHROMIUM` to an existing Chromium executable if needed. These regression tests do **not** exercise a live Copilot sign-in or repository round-trip.
+Python browser tests require Playwright and Chromium and are skipped if unavailable. Set `ROUNDTRIP_TEST_CHROMIUM` to an existing Chromium executable if needed. These regression tests do **not** exercise a live Copilot sign-in, OneDrive, or repository round-trip.
 
 ## Security and maintenance
 
 - Upload only repositories approved for your organization's Copilot environment. Keep browser profiles and temporary archives private.
+- After every submitted prompt, the engine permanently deletes all folders in the Copilot account's OneDrive and empties its recycle bin (see [OneDrive cleanup](#onedrive-cleanup)).
 - Review the resulting diff and test the target project before committing. Browser UI changes can interrupt automation.
 - Follow `AGENTS.md` and `.github/copilot-instructions.md` when present. Keep README files accurate and comments concise, focused on current behavior, and free of historical narration; preserve license notices and tool directives.
 - The Python script remains the sole automation engine for both CLI and extension. Repository instructions included in prompts are guidance, not an enforcement mechanism.
