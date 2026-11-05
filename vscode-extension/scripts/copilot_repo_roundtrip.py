@@ -1606,8 +1606,7 @@ def open_context(p, profile: Path, headless: bool, downloads: Path):
 
 
 # Every Copilot prompt uploads its files to the "Microsoft Copilot Chat Files" folder in the signed-in account's
-# OneDrive. After a submitted prompt ends, the engine deletes only that folder and then permanently deletes it from
-# the recycle bin; other files, folders, and recycle-bin items are kept.
+# OneDrive. After a submitted prompt ends, the engine deletes only that folder and then empties the recycle bin.
 ONEDRIVE_FILES_URL = "https://kurwalabb-my.sharepoint.com/my"
 ONEDRIVE_RECYCLE_URL = "https://kurwalabb-my.sharepoint.com/recycle"
 COPILOT_FOLDER_NAME = "Microsoft Copilot Chat Files"
@@ -1657,9 +1656,27 @@ ITEM_ROWS_SCRIPT = r"""
   row.getClientRects().length > 0 && !row.querySelector('[role="columnheader"], th') &&
   !row.closest('[role="dialog"]') && (row.innerText || '').trim()).length
 """
+# Scrolls every scrollable container that holds list rows by about one screen, or to the start when top is set;
+# returns whether anything moved. Virtualized lists render only the rows near the visible area.
+SCROLL_LISTS_SCRIPT = r"""
+(top) => {
+  let moved = false;
+  for (const el of document.querySelectorAll('*')) {
+    if (el.scrollHeight <= el.clientHeight + 4 || !el.querySelector('[role="row"], tr')) continue;
+    if (el !== document.scrollingElement && !/auto|scroll|overlay/.test(getComputedStyle(el).overflowY)) continue;
+    const before = el.scrollTop;
+    el.scrollTop = top ? 0 : before + Math.max(200, el.clientHeight * 0.8);
+    if (el.scrollTop !== before) moved = true;
+  }
+  return moved;
+}
+"""
 DIALOGS = '[role="dialog"]:visible, [role="alertdialog"]:visible'
 DELETE_NAME = re.compile(r"^\s*delete\s*$", re.I)
-CONFIRM_PERMANENT_NAME = re.compile(r"^\s*(yes|delete|permanently delete)\s*$", re.I)
+CONFIRM_DELETE_NAME = re.compile(r"^\s*(delete|yes)\s*$", re.I)
+MY_FILES_NAME = re.compile(r"^\s*my files\s*$", re.I)
+EMPTY_BIN_NAME = re.compile(r"^\s*empty (the )?recycle bin\s*$", re.I)
+CONFIRM_EMPTY_NAME = re.compile(r"^\s*(yes|delete|ok|empty recycle bin|permanently delete)\s*$", re.I)
 
 
 def _host(url):
@@ -1725,8 +1742,25 @@ def _press(page, node, done=None):
     return _settle(page, done) if done else True
 
 
+def _scopes(page):
+    """The page's frames, main frame first; OneDrive may render its list inside a frame."""
+    try:
+        frames = list(page.frames)
+    except Exception:
+        frames = []
+    return frames or [page]
+
+
+def _controls(page, name, roles=("button", "menuitem")):
+    """Visible enabled controls with an exact accessible name outside dialogs, in every frame."""
+    found = []
+    for scope in _scopes(page):
+        found += _outside_dialogs(_visible_controls(scope, name, roles))
+    return found
+
+
 def _delete_shown(page):
-    return bool(_outside_dialogs(_visible_controls(page, DELETE_NAME)))
+    return bool(_controls(page, DELETE_NAME))
 
 
 def open_signed_in(page, url, timeout_seconds=CLEANUP_LOAD_SECONDS):
@@ -1764,14 +1798,74 @@ def open_signed_in(page, url, timeout_seconds=CLEANUP_LOAD_SECONDS):
     raise RuntimeError(f"{url} did not open with the signed-in account; run the login command again")
 
 
-def _wait_rows(page, script, timeout_seconds):
-    """Wait until the list shows rows; returns the last result (empty when the list stays empty)."""
+def _item_count(page):
+    """Number of rendered item rows in every frame."""
+    total = 0
+    for scope in _scopes(page):
+        try:
+            total += int(scope.evaluate(ITEM_ROWS_SCRIPT) or 0)
+        except Exception:
+            continue
+    return total
+
+
+def _wait_items(page, timeout_seconds):
+    """Wait until the list shows item rows; returns their number (0 when the list stays empty)."""
     deadline = time.monotonic() + timeout_seconds
-    result = page.evaluate(script)
-    while not result and time.monotonic() < deadline:
+    count = _item_count(page)
+    while not count and time.monotonic() < deadline:
         page.wait_for_timeout(500)
-        result = page.evaluate(script)
-    return result
+        count = _item_count(page)
+    return count
+
+
+def _mark_targets(page, args):
+    """Mark target and other rows; returns the frame holding targets and their number."""
+    for scope in _scopes(page):
+        try:
+            count = int(scope.evaluate(TARGET_ROWS_SCRIPT, args) or 0)
+        except Exception:
+            continue
+        if count:
+            return scope, count
+    return None, 0
+
+
+def _scroll_lists(page, top=False):
+    moved = False
+    for scope in _scopes(page):
+        try:
+            moved = bool(scope.evaluate(SCROLL_LISTS_SCRIPT, top)) or moved
+        except Exception:
+            continue
+    return moved
+
+
+def _find_targets(page, args, screens=30):
+    """Find target rows, scrolling virtualized lists from the start until they are rendered."""
+    scope, count = _mark_targets(page, args)
+    if count:
+        return scope, count
+    moved = _scroll_lists(page, top=True)
+    for _ in range(screens + 1):
+        if moved:
+            page.wait_for_timeout(500)
+            scope, count = _mark_targets(page, args)
+            if count:
+                return scope, count
+        moved = _scroll_lists(page)
+        if not moved:
+            break
+    return None, 0
+
+
+def _open_my_files(page):
+    """Switch to the My files view when OneDrive opened another view, such as Home."""
+    controls = _controls(page, MY_FILES_NAME, ("link", "tab", "treeitem", "menuitem", "button"))
+    if not controls or not _press(page, controls[0]):
+        return False
+    page.wait_for_timeout(UI_SETTLE_MS)
+    return True
 
 
 def _row_selected(row):
@@ -1821,71 +1915,127 @@ def _set_row(page, row, selected, first):
     return _settle(page, done)
 
 
-def _select_targets(page):
+def _select_targets(scope, page):
     """Select every target row and clear every other row; returns the number of selected targets."""
-    for row in _rows(page, OTHER_ROW):
+    for row in _rows(scope, OTHER_ROW):
         if _row_selected(row) and not _set_row(page, row, False, False):
             raise RuntimeError("another OneDrive item could not be cleared from the selection")
-    selected = sum(1 for i, row in enumerate(_rows(page, TARGET_ROW)) if _set_row(page, row, True, i == 0))
-    # Delete must never apply to anything but the named folder.
-    if any(_row_selected(row) for row in _rows(page, OTHER_ROW)):
-        raise RuntimeError("another OneDrive item was selected together with the folder")
+    selected = sum(1 for i, row in enumerate(_rows(scope, TARGET_ROW)) if _set_row(page, row, True, i == 0))
+    _ensure_only_targets(scope)
     return selected
 
 
-def _confirm(page, name, timeout_seconds=10):
-    """Click the named button in the confirmation dialog."""
+def _ensure_only_targets(scope):
+    # Delete must never apply to anything but the named folder.
+    if any(_row_selected(row) for row in _rows(scope, OTHER_ROW)):
+        raise RuntimeError("another OneDrive item was selected together with the folder")
+
+
+def _context_delete(scope, page):
+    """Choose Delete from the first target row's context menu; right-clicking selects only that row."""
+    rows = _rows(scope, TARGET_ROW)
+    if not rows:
+        return False
+    try:
+        rows[0].click(button="right", timeout=3000)
+    except Exception:
+        return False
+    menu = lambda: [node for frame in _scopes(page) for node in _visible_controls(frame, DELETE_NAME, ("menuitem",))]
+    if not _settle(page, lambda: bool(menu()), timeout_seconds=5):
+        page.keyboard.press("Escape")
+        return False
+    try:
+        _ensure_only_targets(scope)
+    except RuntimeError:
+        page.keyboard.press("Escape")
+        raise
+    return _press(page, menu()[0])
+
+
+def _confirm_until(page, name, done, timeout_seconds, required=False):
+    """Press the named button of the confirmation dialog that follows a command, then wait until done() holds.
+
+    With required set, done() counts only after the dialog was confirmed.
+    """
     deadline = time.monotonic() + timeout_seconds
+    confirmed = False
     while time.monotonic() < deadline:
-        dialogs = page.locator(DIALOGS)
-        for i in range(dialogs.count()):
-            buttons = _visible_controls(dialogs.nth(i), name, ("button",))
-            if buttons:
-                return _press(page, buttons[0])
+        for scope in [] if confirmed else _scopes(page):
+            try:
+                dialogs = scope.locator(DIALOGS)
+                buttons = [b for i in range(dialogs.count())
+                           for b in _visible_controls(dialogs.nth(i), name, ("button",))]
+            except Exception:
+                continue
+            if buttons and _press(page, buttons[0]):
+                confirmed = True
+                break
+        try:
+            if (confirmed or not required) and done():
+                return True
+        except Exception:
+            pass
         page.wait_for_timeout(300)
     return False
 
 
-def _delete_named(page, name, folders, confirm_name, rounds=5, timeout_seconds=CLEANUP_ACTION_SECONDS):
-    """Select only the rows named name in the open list, delete them, and return the count."""
-    args = {"name": name, "folders": folders}
-    _wait_rows(page, ITEM_ROWS_SCRIPT, CLEANUP_LOAD_SECONDS)
+def delete_copilot_folder(page, name=COPILOT_FOLDER_NAME, rounds=5, timeout_seconds=CLEANUP_ACTION_SECONDS):
+    """Select only the named folder in the open My files list, delete it with confirmation, and return the count.
+
+    The row check selects the folder for the command-bar Delete; the row's context menu is used when no Delete
+    command appears.
+    """
+    args = {"name": name, "folders": True}
+    _wait_items(page, CLEANUP_LOAD_SECONDS)
+    scope, count = _find_targets(page, args)
+    if not count and _open_my_files(page):
+        _wait_items(page, CLEANUP_LOAD_SECONDS)
+        scope, count = _find_targets(page, args)
     deleted = 0
     for _ in range(rounds):
-        count = page.evaluate(TARGET_ROWS_SCRIPT, args)
         if not count:
             return deleted
-        if not _select_targets(page):
-            raise RuntimeError(f"{name} could not be selected")
-        if not _settle(page, lambda: _delete_shown(page)):
-            raise RuntimeError(f"the Delete command was not shown for {name}")
-        command = _outside_dialogs(_visible_controls(page, DELETE_NAME))[0]
-        if not _press(page, command) or not _confirm(page, confirm_name):
-            raise RuntimeError("the Delete confirmation dialog did not appear")
-        deadline = time.monotonic() + timeout_seconds
-        while page.evaluate(TARGET_ROWS_SCRIPT, args) >= count and time.monotonic() < deadline:
-            page.wait_for_timeout(500)
-        remaining = page.evaluate(TARGET_ROWS_SCRIPT, args)
-        if remaining >= count:
+        emit_status("cleanup", f"Selecting {name} in OneDrive My files...")
+        if _select_targets(scope, page) and _settle(page, lambda: _delete_shown(page)):
+            started = _press(page, _controls(page, DELETE_NAME)[0])
+        else:
+            started = _context_delete(scope, page)
+        if not started:
+            raise RuntimeError(f"{name} could not be selected for deletion")
+        emit_status("cleanup", f"Confirming deletion of {name}...")
+        remaining = lambda: int(scope.evaluate(TARGET_ROWS_SCRIPT, args) or 0)
+        if not _confirm_until(page, CONFIRM_DELETE_NAME, lambda: remaining() < count, timeout_seconds):
             raise RuntimeError(f"{name} was not deleted")
-        deleted += count - remaining
+        left = remaining()
+        deleted += count - left
+        scope, count = (scope, left) if left else _find_targets(page, args)
     return deleted
 
 
-def delete_copilot_folder(page, name=COPILOT_FOLDER_NAME):
-    """Delete the named folder from the open My files list to the recycle bin; returns the count."""
-    return _delete_named(page, name, True, DELETE_NAME)
+def empty_recycle_bin(page, timeout_seconds=CLEANUP_ACTION_SECONDS):
+    """Empty the open recycle bin with Empty recycle bin and its confirmation; returns False when already empty.
 
-
-def purge_copilot_folder(page, name=COPILOT_FOLDER_NAME):
-    """Permanently delete the named folder from the open recycle bin; returns the count."""
-    return _delete_named(page, name, False, CONFIRM_PERMANENT_NAME)
+    OneDrive hides or disables Empty recycle bin while the bin is empty.
+    """
+    empty_command = lambda: _controls(page, EMPTY_BIN_NAME)
+    _settle(page, lambda: bool(empty_command() or _item_count(page)), timeout_seconds=CLEANUP_LOAD_SECONDS)
+    if not _settle(page, lambda: bool(empty_command()), timeout_seconds=5 if _item_count(page) else 0):
+        if _item_count(page):
+            raise RuntimeError("the Empty recycle bin command was not shown")
+        return False
+    emit_status("cleanup", "Clicking Empty recycle bin...")
+    if not _press(page, empty_command()[0]):
+        raise RuntimeError("the Empty recycle bin command could not be clicked")
+    emit_status("cleanup", "Confirming Empty recycle bin...")
+    if not _confirm_until(page, CONFIRM_EMPTY_NAME, lambda: not _item_count(page), timeout_seconds, required=True):
+        raise RuntimeError("the Empty recycle bin confirmation did not finish")
+    return True
 
 
 def clean_onedrive(ctx, files_url=ONEDRIVE_FILES_URL, recycle_url=ONEDRIVE_RECYCLE_URL):
-    """Best effort: delete the Copilot chat files folder, then purge it from the recycle bin; never fails the run.
+    """Best effort: delete the Copilot chat files folder, then empty the recycle bin; never fails the run.
 
-    The recycle bin is cleaned even when the folder deletion fails. Cancellation does not interrupt cleanup,
+    The recycle bin is emptied even when the folder deletion fails. Cancellation does not interrupt cleanup,
     so files uploaded by a stopped prompt are removed as well.
     """
     def report(error):
@@ -1903,11 +2053,10 @@ def clean_onedrive(ctx, files_url=ONEDRIVE_FILES_URL, recycle_url=ONEDRIVE_RECYC
                         else f"OneDrive My files has no {COPILOT_FOLDER_NAME} folder.")
         except Exception as error:
             report(error)
-        emit_status("cleanup", f"Removing {COPILOT_FOLDER_NAME} from the OneDrive recycle bin...")
+        emit_status("cleanup", "Opening the OneDrive recycle bin to empty it...")
         open_signed_in(page, recycle_url)
-        purged = purge_copilot_folder(page)
-        emit_status("cleanup", f"Removed {COPILOT_FOLDER_NAME} from the OneDrive recycle bin." if purged
-                    else f"The OneDrive recycle bin has no {COPILOT_FOLDER_NAME} folder.")
+        emit_status("cleanup", "Emptied the OneDrive recycle bin." if empty_recycle_bin(page)
+                    else "The OneDrive recycle bin is already empty.")
     except Exception as error:
         report(error)
     finally:
