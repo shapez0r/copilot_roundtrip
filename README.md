@@ -82,9 +82,9 @@ Run `python vscode-extension/scripts/copilot_repo_roundtrip.py --help` or append
 
 ### OneDrive cleanup
 
-Copilot stores every uploaded archive and attachment in the signed-in account's OneDrive. After each submitted prompt, the engine opens https://kurwalabb-my.sharepoint.com/my (choosing the signed-in account if Microsoft asks), selects every folder in **My files** with the list's select-all check (or each row's check), deletes them with **Delete** and the confirmation dialog's **Delete**, then opens https://kurwalabb-my.sharepoint.com/recycle and confirms **Empty recycle bin** with **Yes**. Folders are recognized by their folder icon or item count; files in the root of My files are cleared from the selection and kept. Check controls that are hidden or covered until hover receive a direct click. The recycle bin is emptied even if folder deletion fails.
+Copilot stores every uploaded archive and attachment in the **Microsoft Copilot Chat Files** folder of the signed-in account's OneDrive. After each submitted prompt, the engine opens https://kurwalabb-my.sharepoint.com/my (choosing the signed-in account if Microsoft asks), selects only the **Microsoft Copilot Chat Files** folder with its row check, and deletes it with **Delete** and the confirmation dialog's **Delete**. It then opens https://kurwalabb-my.sharepoint.com/recycle, selects only the **Microsoft Copilot Chat Files** entry, and permanently deletes it with **Delete** and the confirmation dialog's **Yes** (or **Delete**). The folder is recognized by its exact name together with its folder icon or item count. Any other selected item is cleared before deletion, and deletion is aborted if that fails. Check controls that are hidden or covered until hover receive a direct click. The recycle bin is cleaned even if the folder deletion fails.
 
-This permanently removes the uploaded files together with every other folder and recycle-bin item of that account, so use a Copilot account whose OneDrive holds nothing else. Cleanup is best effort: its progress and any failure are reported as `cleanup` status lines, a failure does not fail the run, and anything left behind is removed after a later prompt. Runs that end before a prompt is submitted do not clean up.
+All other files, folders, and recycle-bin items of the account are kept. Cleanup is best effort: its progress and any failure are reported as `cleanup` status lines, a failure does not fail the run, and anything left behind is removed after a later prompt. Runs that end before a prompt is submitted do not clean up.
 
 The tool reports Git status and diff statistics, but does not verify that Copilot changed only the requested files. From the target repository, review:
 
@@ -164,7 +164,7 @@ Python browser tests require Playwright and Chromium and are skipped if unavaila
 ## Security and maintenance
 
 - Upload only repositories approved for your organization's Copilot environment. Keep browser profiles and temporary archives private.
-- After every submitted prompt, the engine permanently deletes all folders in the Copilot account's OneDrive and empties its recycle bin (see [OneDrive cleanup](#onedrive-cleanup)).
+- After every submitted prompt, the engine permanently deletes the **Microsoft Copilot Chat Files** folder from the Copilot account's OneDrive and its recycle bin (see [OneDrive cleanup](#onedrive-cleanup)).
 - Review the resulting diff and test the target project before committing. Browser UI changes can interrupt automation.
 - Follow `AGENTS.md` and `.github/copilot-instructions.md` when present. Keep README files accurate and comments concise, focused on current behavior, and free of historical narration; preserve license notices and tool directives.
 - The Python script remains the sole automation engine for both CLI and extension. Repository instructions included in prompts are guidance, not an enforcement mechanism.

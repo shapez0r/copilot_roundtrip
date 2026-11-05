@@ -1605,10 +1605,12 @@ def open_context(p, profile: Path, headless: bool, downloads: Path):
     )
 
 
-# Every Copilot prompt uploads its files to the signed-in account's OneDrive. After a submitted prompt ends,
-# the engine deletes every folder under My files and then empties the OneDrive recycle bin.
+# Every Copilot prompt uploads its files to the "Microsoft Copilot Chat Files" folder in the signed-in account's
+# OneDrive. After a submitted prompt ends, the engine deletes only that folder and then permanently deletes it from
+# the recycle bin; other files, folders, and recycle-bin items are kept.
 ONEDRIVE_FILES_URL = "https://kurwalabb-my.sharepoint.com/my"
 ONEDRIVE_RECYCLE_URL = "https://kurwalabb-my.sharepoint.com/recycle"
+COPILOT_FOLDER_NAME = "Microsoft Copilot Chat Files"
 # Each page load and list action is bounded, so a changed OneDrive UI cannot hold the run open.
 CLEANUP_LOAD_SECONDS = 30
 CLEANUP_ACTION_SECONDS = 60
@@ -1618,38 +1620,38 @@ ACCOUNT_TILES = ('#tilesHolder [role="button"], #tilesHolder .table, [data-test-
                  '[role="listitem"] [role="button"]')
 CONFIRM_SIGN_IN = "#idSIButton9, input[type=\"submit\"][value=\"Yes\" i], button:text-is(\"Yes\")"
 
-# Marks visible list rows as folders (folder icon or an "N items" size) or files. OneDrive lists may use ARIA
-# grid roles or native table elements.
-FOLDER_ROWS_SCRIPT = r"""
-() => {
+# Marks visible list rows as targets (an element showing exactly the given name, and, when folders is set, a folder
+# icon or an "N items" size) or as other rows; returns the number of targets. OneDrive lists may use ARIA grid roles
+# or native table elements.
+TARGET_ROWS_SCRIPT = r"""
+(args) => {
   const visible = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
   const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
-  document.querySelectorAll('[data-roundtrip-folder], [data-roundtrip-file]').forEach(el => {
-    el.removeAttribute('data-roundtrip-folder'); el.removeAttribute('data-roundtrip-file');
+  const name = norm(args.name).toLowerCase();
+  document.querySelectorAll('[data-roundtrip-target], [data-roundtrip-other]').forEach(el => {
+    el.removeAttribute('data-roundtrip-target'); el.removeAttribute('data-roundtrip-other');
   });
   const icon = '[data-icon-name*="folder" i], img[alt="folder" i], img[alt^="folder," i], img[src*="folder" i], ' +
     '[aria-label="folder" i], [title="folder" i], [data-automationid*="folder" i]';
-  const names = [];
+  let targets = 0;
   for (const row of document.querySelectorAll('[role="row"], tr')) {
     if (!visible(row) || row.querySelector('[role="columnheader"], th') || row.closest('[role="dialog"]') ||
         !norm(row.innerText)) continue;
-    const count = Array.from(row.querySelectorAll('*')).some(el =>
+    const named = Array.from(row.querySelectorAll('*')).some(el =>
+      norm(el.innerText || el.textContent).toLowerCase() === name);
+    const folder = !args.folders || row.querySelector(icon) || Array.from(row.querySelectorAll('*')).some(el =>
       !el.children.length && /^\d[\d,.\s]*items?$/i.test(norm(el.innerText || el.textContent)));
-    if (!count && !row.querySelector(icon)) { row.setAttribute('data-roundtrip-file', '1'); continue; }
-    row.setAttribute('data-roundtrip-folder', String(names.length));
-    const label = row.querySelector('[data-automationid="FieldRenderer-name"], button, a');
-    names.push(norm(label && label.innerText) || norm(row.getAttribute('aria-label')) || 'folder');
+    if (named && folder) { row.setAttribute('data-roundtrip-target', '1'); targets++; }
+    else row.setAttribute('data-roundtrip-other', '1');
   }
-  return names;
+  return targets;
 }
 """
-FOLDER_ROW = '[data-roundtrip-folder]'
-FILE_ROW = '[data-roundtrip-file]'
-HEADER_ROW = '[role="row"]:has([role="columnheader"]), tr:has(th)'
+TARGET_ROW = '[data-roundtrip-target]'
+OTHER_ROW = '[data-roundtrip-other]'
 ROW_CHECKBOX = ('[role="checkbox"], input[type="checkbox"], [data-selection-toggle="true"], '
                 '[data-automationid="DetailsRowCheck"]')
-SELECT_ALL_NAME = re.compile(r"select all|all (items|rows)|toggle selection for all", re.I)
-# Item rows of the recycle bin list; the header row holds column headers.
+# Item rows of a list; the header row holds column headers.
 ITEM_ROWS_SCRIPT = r"""
 () => Array.from(document.querySelectorAll('[role="row"], tr')).filter(row =>
   row.getClientRects().length > 0 && !row.querySelector('[role="columnheader"], th') &&
@@ -1657,8 +1659,7 @@ ITEM_ROWS_SCRIPT = r"""
 """
 DIALOGS = '[role="dialog"]:visible, [role="alertdialog"]:visible'
 DELETE_NAME = re.compile(r"^\s*delete\s*$", re.I)
-EMPTY_BIN_NAME = re.compile(r"^\s*empty recycle bin\s*$", re.I)
-CONFIRM_EMPTY_NAME = re.compile(r"^\s*(yes|delete|empty recycle bin)\s*$", re.I)
+CONFIRM_PERMANENT_NAME = re.compile(r"^\s*(yes|delete|permanently delete)\s*$", re.I)
 
 
 def _host(url):
@@ -1799,33 +1800,6 @@ def _rows(page, selector):
     return [loc.nth(i) for i in range(loc.count())]
 
 
-def _header_check(page):
-    """The list's select-all check in the column header row."""
-    for header in _rows(page, HEADER_ROW):
-        if not header.is_visible():
-            continue
-        try:
-            header.hover(timeout=2000)
-        except Exception:
-            pass
-        check = _checkbox(header)
-        if check is not None:
-            return check
-    try:
-        named = page.get_by_role("checkbox", name=SELECT_ALL_NAME, include_hidden=True)
-        return named.first if named.count() else None
-    except Exception:
-        return None
-
-
-def _select_all(page):
-    check = _header_check(page)
-    if check is None:
-        return False
-    folders = _rows(page, FOLDER_ROW)
-    return _press(page, check, lambda: all(_row_selected(row) for row in folders) or _delete_shown(page))
-
-
 def _set_row(page, row, selected, first):
     """Select or clear one row through its check control, else by Ctrl+clicking beside its name."""
     if _row_selected(row) == selected:
@@ -1847,35 +1821,16 @@ def _set_row(page, row, selected, first):
     return _settle(page, done)
 
 
-def _clear_selection(page):
-    """Clear the list selection; raises when the Delete command still shows a selection."""
-    try:
-        page.keyboard.press("Escape")
-    except Exception:
-        pass
-    if _settle(page, lambda: not _delete_shown(page), 1):
-        return
-    check = _header_check(page)
-    if check is not None:
-        _press(page, check, lambda: not _delete_shown(page))
-    for row in _rows(page, FOLDER_ROW) + _rows(page, FILE_ROW):
-        if _row_selected(row):
-            _set_row(page, row, False, False)
-    if _delete_shown(page):
-        raise RuntimeError("the selection in My files could not be cleared")
-
-
-def _select_folders(page):
-    """Select every folder row and no file row; returns the number of selected folders."""
-    folders, files = _rows(page, FOLDER_ROW), _rows(page, FILE_ROW)
-    if _select_all(page):
-        if not files:
-            return len(folders)
-        # Files are cleared only where rows report their selection state.
-        if all(_row_selected(row) for row in folders) and all(_set_row(page, row, False, False) for row in files):
-            return len(folders)
-        _clear_selection(page)
-    return sum(1 for i, row in enumerate(folders) if _set_row(page, row, True, i == 0))
+def _select_targets(page):
+    """Select every target row and clear every other row; returns the number of selected targets."""
+    for row in _rows(page, OTHER_ROW):
+        if _row_selected(row) and not _set_row(page, row, False, False):
+            raise RuntimeError("another OneDrive item could not be cleared from the selection")
+    selected = sum(1 for i, row in enumerate(_rows(page, TARGET_ROW)) if _set_row(page, row, True, i == 0))
+    # Delete must never apply to anything but the named folder.
+    if any(_row_selected(row) for row in _rows(page, OTHER_ROW)):
+        raise RuntimeError("another OneDrive item was selected together with the folder")
+    return selected
 
 
 def _confirm(page, name, timeout_seconds=10):
@@ -1891,56 +1846,46 @@ def _confirm(page, name, timeout_seconds=10):
     return False
 
 
-def delete_folders(page, rounds=5, timeout_seconds=CLEANUP_ACTION_SECONDS):
-    """Select every folder in the open My files list, delete it to the recycle bin, and return the count."""
+def _delete_named(page, name, folders, confirm_name, rounds=5, timeout_seconds=CLEANUP_ACTION_SECONDS):
+    """Select only the rows named name in the open list, delete them, and return the count."""
+    args = {"name": name, "folders": folders}
+    _wait_rows(page, ITEM_ROWS_SCRIPT, CLEANUP_LOAD_SECONDS)
     deleted = 0
     for _ in range(rounds):
-        names = _wait_rows(page, FOLDER_ROWS_SCRIPT, CLEANUP_LOAD_SECONDS if not deleted else 3)
-        if not names:
+        count = page.evaluate(TARGET_ROWS_SCRIPT, args)
+        if not count:
             return deleted
-        if not _select_folders(page):
-            raise RuntimeError("the folders in My files could not be selected")
+        if not _select_targets(page):
+            raise RuntimeError(f"{name} could not be selected")
         if not _settle(page, lambda: _delete_shown(page)):
-            raise RuntimeError("the Delete command was not shown for the selected folders")
+            raise RuntimeError(f"the Delete command was not shown for {name}")
         command = _outside_dialogs(_visible_controls(page, DELETE_NAME))[0]
-        if not _press(page, command) or not _confirm(page, DELETE_NAME):
+        if not _press(page, command) or not _confirm(page, confirm_name):
             raise RuntimeError("the Delete confirmation dialog did not appear")
         deadline = time.monotonic() + timeout_seconds
-        while len(page.evaluate(FOLDER_ROWS_SCRIPT)) >= len(names) and time.monotonic() < deadline:
+        while page.evaluate(TARGET_ROWS_SCRIPT, args) >= count and time.monotonic() < deadline:
             page.wait_for_timeout(500)
-        remaining = len(page.evaluate(FOLDER_ROWS_SCRIPT))
-        if remaining >= len(names):
-            raise RuntimeError("the selected folders were not deleted")
-        deleted += len(names) - remaining
+        remaining = page.evaluate(TARGET_ROWS_SCRIPT, args)
+        if remaining >= count:
+            raise RuntimeError(f"{name} was not deleted")
+        deleted += count - remaining
     return deleted
 
 
-def empty_recycle_bin(page, timeout_seconds=CLEANUP_ACTION_SECONDS):
-    """Empty the open OneDrive recycle bin; returns False when it was already empty."""
-    deadline = time.monotonic() + CLEANUP_LOAD_SECONDS
-    controls = []
-    while not controls and time.monotonic() < deadline:
-        controls = _outside_dialogs(_visible_controls(page, EMPTY_BIN_NAME))
-        if not controls:
-            page.wait_for_timeout(500)
-    if not controls:
-        if page.evaluate(ITEM_ROWS_SCRIPT):
-            raise RuntimeError("the Empty recycle bin command was not shown")
-        return False
-    if not _press(page, controls[0]) or not _confirm(page, CONFIRM_EMPTY_NAME):
-        raise RuntimeError("the Empty recycle bin confirmation dialog did not appear")
-    deadline = time.monotonic() + timeout_seconds
-    while page.evaluate(ITEM_ROWS_SCRIPT) and time.monotonic() < deadline:
-        page.wait_for_timeout(500)
-    if page.evaluate(ITEM_ROWS_SCRIPT):
-        raise RuntimeError("the recycle bin still lists items")
-    return True
+def delete_copilot_folder(page, name=COPILOT_FOLDER_NAME):
+    """Delete the named folder from the open My files list to the recycle bin; returns the count."""
+    return _delete_named(page, name, True, DELETE_NAME)
+
+
+def purge_copilot_folder(page, name=COPILOT_FOLDER_NAME):
+    """Permanently delete the named folder from the open recycle bin; returns the count."""
+    return _delete_named(page, name, False, CONFIRM_PERMANENT_NAME)
 
 
 def clean_onedrive(ctx, files_url=ONEDRIVE_FILES_URL, recycle_url=ONEDRIVE_RECYCLE_URL):
-    """Best effort: delete every My files folder, then empty the recycle bin; never fails the run.
+    """Best effort: delete the Copilot chat files folder, then purge it from the recycle bin; never fails the run.
 
-    The recycle bin is emptied even when folder deletion fails. Cancellation does not interrupt cleanup,
+    The recycle bin is cleaned even when the folder deletion fails. Cancellation does not interrupt cleanup,
     so files uploaded by a stopped prompt are removed as well.
     """
     def report(error):
@@ -1951,18 +1896,18 @@ def clean_onedrive(ctx, files_url=ONEDRIVE_FILES_URL, recycle_url=ONEDRIVE_RECYC
         page = ctx.new_page()
         page.set_default_timeout(CLEANUP_LOAD_SECONDS * 1000)
         try:
-            emit_status("cleanup", "Opening OneDrive My files to delete its folders...")
+            emit_status("cleanup", f"Opening OneDrive My files to delete {COPILOT_FOLDER_NAME}...")
             open_signed_in(page, files_url)
-            deleted = delete_folders(page)
-            emit_status("cleanup", f"Deleted {deleted} OneDrive folder(s)." if deleted
-                        else "OneDrive My files has no folders to delete.")
+            deleted = delete_copilot_folder(page)
+            emit_status("cleanup", f"Deleted the OneDrive folder {COPILOT_FOLDER_NAME}." if deleted
+                        else f"OneDrive My files has no {COPILOT_FOLDER_NAME} folder.")
         except Exception as error:
             report(error)
-        emit_status("cleanup", "Emptying the OneDrive recycle bin...")
+        emit_status("cleanup", f"Removing {COPILOT_FOLDER_NAME} from the OneDrive recycle bin...")
         open_signed_in(page, recycle_url)
-        emptied = empty_recycle_bin(page)
-        emit_status("cleanup", "OneDrive recycle bin emptied." if emptied
-                    else "OneDrive recycle bin is already empty.")
+        purged = purge_copilot_folder(page)
+        emit_status("cleanup", f"Removed {COPILOT_FOLDER_NAME} from the OneDrive recycle bin." if purged
+                    else f"The OneDrive recycle bin has no {COPILOT_FOLDER_NAME} folder.")
     except Exception as error:
         report(error)
     finally:
