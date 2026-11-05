@@ -157,6 +157,20 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(status.call_args_list[-1].args,
                          ('cleanup', 'OneDrive cleanup did not finish: sign-in required'))
 
+    def test_onedrive_recycle_bin_is_emptied_when_folder_deletion_fails(self):
+        ctx, page = Mock(), Mock()
+        ctx.new_page.return_value = page
+        with patch.object(rt, 'open_signed_in') as opened, \
+                patch.object(rt, 'delete_folders', side_effect=RuntimeError('no Delete command')), \
+                patch.object(rt, 'empty_recycle_bin', return_value=True) as emptied, \
+                patch.object(rt, 'emit_status') as status:
+            rt.clean_onedrive(ctx)
+        self.assertEqual(opened.call_args_list[-1].args[1], 'https://kurwalabb-my.sharepoint.com/recycle')
+        emptied.assert_called_once_with(page)
+        messages = [call.args[1] for call in status.call_args_list]
+        self.assertIn('OneDrive cleanup did not finish: no Delete command', messages)
+        self.assertEqual(messages[-1], 'OneDrive recycle bin emptied.')
+
     def test_every_submitted_prompt_cleans_onedrive_before_the_browser_closes(self):
         tree = ast.parse(SCRIPT.read_text())
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run_roundtrip')
@@ -614,6 +628,62 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertIn('notes.docx', rows[1])
         self.assertEqual(self.page.locator('[role="dialog"]').count(), 0)
+
+    # Header select-all and row checks whose transparent inputs sit under their visible indicators.
+    SELECT_ALL_FILES = '''<style>
+        .check { position: relative; display: inline-block; width: 20px; height: 20px; }
+        .check input { position: absolute; inset: 0; margin: 0; opacity: 0; }
+        .check i { position: absolute; inset: 0; border-radius: 10px; border: 1px solid #333; }
+        tbody .check { visibility: hidden; } tbody tr:hover .check, tbody tr.sel .check { visibility: visible; }
+      </style>
+      <div id="bar"><button>Share</button></div>
+      <table><thead><tr><th><span class="check"><input type="checkbox" aria-label="Select all items"><i></i></span></th>
+        <th>Name</th><th>File size</th></tr></thead><tbody>{rows}</tbody></table>
+      <script>
+        const bar = document.getElementById('bar'), all = document.querySelector('thead input');
+        const rows = () => Array.from(document.querySelectorAll('tbody tr'));
+        const sync = () => {
+          rows().forEach(r => r.classList.toggle('sel', r.querySelector('input').checked));
+          const any = rows().some(r => r.querySelector('input').checked);
+          let del = document.getElementById('delete');
+          if (any && !del) {
+            del = document.createElement('button'); del.id = 'delete'; del.textContent = 'Delete';
+            del.onclick = () => {
+              const dialog = document.createElement('div');
+              dialog.setAttribute('role', 'dialog');
+              dialog.innerHTML = '<h2>Delete?</h2><button id="confirm">Delete</button><button>Cancel</button>';
+              dialog.querySelector('#confirm').onclick = () => {
+                rows().filter(r => r.querySelector('input').checked).forEach(r => r.remove());
+                dialog.remove(); del.remove(); all.checked = false;
+              };
+              document.body.appendChild(dialog);
+            };
+            bar.appendChild(del);
+          } else if (!any && del) del.remove();
+        };
+        all.addEventListener('change', () => { rows().forEach(r => r.querySelector('input').checked = all.checked); sync(); });
+        document.querySelectorAll('tbody input').forEach(input => input.addEventListener('change', sync));
+        document.addEventListener('keydown', e => {
+          if (e.key === 'Escape') { all.checked = false; rows().forEach(r => r.querySelector('input').checked = false); sync(); }
+        });
+      </script>'''
+    FOLDER = ('<tr><td><span class="check"><input type="checkbox" aria-label="Select row"><i></i></span></td>'
+              '<td><img alt="" src="data:,folder"><button>%s</button></td><td>%s</td></tr>')
+    FILE = ('<tr><td><span class="check"><input type="checkbox" aria-label="Select row"><i></i></span></td>'
+            '<td><button>%s</button></td><td>12 KB</td></tr>')
+
+    def test_onedrive_header_select_all_deletes_the_only_folder(self):
+        self.page.set_content(self.SELECT_ALL_FILES.replace('{rows}', self.FOLDER % ('Microsoft Copilot Chat Files', '7 items')))
+        self.assertEqual(rt.delete_folders(self.page), 1)
+        self.assertEqual(self.page.locator('tbody tr').count(), 0)
+        self.assertEqual(self.page.locator('[role="dialog"]').count(), 0)
+
+    def test_onedrive_select_all_clears_files_before_deleting_folders(self):
+        rows = (self.FOLDER % ('Documents', '1 item') + self.FILE % 'notes.docx' +
+                self.FOLDER % ('Microsoft Copilot Chat Files', '7 items'))
+        self.page.set_content(self.SELECT_ALL_FILES.replace('{rows}', rows))
+        self.assertEqual(rt.delete_folders(self.page), 2)
+        self.assertEqual(self.page.locator('tbody tr').all_inner_texts()[0].strip(), 'notes.docx\t12 KB')
 
     def test_onedrive_cleanup_without_folders_deletes_nothing(self):
         self.page.set_content('<div role="grid"><div role="row"><span role="gridcell">notes.docx</span>'

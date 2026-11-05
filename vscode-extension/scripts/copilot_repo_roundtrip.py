@@ -1618,20 +1618,24 @@ ACCOUNT_TILES = ('#tilesHolder [role="button"], #tilesHolder .table, [data-test-
                  '[role="listitem"] [role="button"]')
 CONFIRM_SIGN_IN = "#idSIButton9, input[type=\"submit\"][value=\"Yes\" i], button:text-is(\"Yes\")"
 
-# Marks visible list rows that are folders: a folder icon or an "N items" size cell instead of a file size.
+# Marks visible list rows as folders (folder icon or an "N items" size) or files. OneDrive lists may use ARIA
+# grid roles or native table elements.
 FOLDER_ROWS_SCRIPT = r"""
 () => {
   const visible = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
   const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
-  document.querySelectorAll('[data-roundtrip-folder]').forEach(el => el.removeAttribute('data-roundtrip-folder'));
-  const icon = '[data-icon-name*="folder" i], img[alt="folder" i], img[alt^="folder," i], ' +
+  document.querySelectorAll('[data-roundtrip-folder], [data-roundtrip-file]').forEach(el => {
+    el.removeAttribute('data-roundtrip-folder'); el.removeAttribute('data-roundtrip-file');
+  });
+  const icon = '[data-icon-name*="folder" i], img[alt="folder" i], img[alt^="folder," i], img[src*="folder" i], ' +
     '[aria-label="folder" i], [title="folder" i], [data-automationid*="folder" i]';
   const names = [];
-  for (const row of document.querySelectorAll('[role="row"]')) {
-    if (!visible(row) || row.querySelector('[role="columnheader"]') || row.closest('[role="dialog"]')) continue;
-    const cells = Array.from(row.querySelectorAll('[role="gridcell"], [role="cell"]'));
-    const count = cells.some(cell => /^\d[\d,.\s]*items?$/i.test(norm(cell.innerText)));
-    if (!count && !row.querySelector(icon)) continue;
+  for (const row of document.querySelectorAll('[role="row"], tr')) {
+    if (!visible(row) || row.querySelector('[role="columnheader"], th') || row.closest('[role="dialog"]') ||
+        !norm(row.innerText)) continue;
+    const count = Array.from(row.querySelectorAll('*')).some(el =>
+      !el.children.length && /^\d[\d,.\s]*items?$/i.test(norm(el.innerText || el.textContent)));
+    if (!count && !row.querySelector(icon)) { row.setAttribute('data-roundtrip-file', '1'); continue; }
     row.setAttribute('data-roundtrip-folder', String(names.length));
     const label = row.querySelector('[data-automationid="FieldRenderer-name"], button, a');
     names.push(norm(label && label.innerText) || norm(row.getAttribute('aria-label')) || 'folder');
@@ -1640,12 +1644,15 @@ FOLDER_ROWS_SCRIPT = r"""
 }
 """
 FOLDER_ROW = '[data-roundtrip-folder]'
+FILE_ROW = '[data-roundtrip-file]'
+HEADER_ROW = '[role="row"]:has([role="columnheader"]), tr:has(th)'
 ROW_CHECKBOX = ('[role="checkbox"], input[type="checkbox"], [data-selection-toggle="true"], '
                 '[data-automationid="DetailsRowCheck"]')
+SELECT_ALL_NAME = re.compile(r"select all|all (items|rows)|toggle selection for all", re.I)
 # Item rows of the recycle bin list; the header row holds column headers.
 ITEM_ROWS_SCRIPT = r"""
-() => Array.from(document.querySelectorAll('[role="row"]')).filter(row =>
-  row.getClientRects().length > 0 && !row.querySelector('[role="columnheader"]') &&
+() => Array.from(document.querySelectorAll('[role="row"], tr')).filter(row =>
+  row.getClientRects().length > 0 && !row.querySelector('[role="columnheader"], th') &&
   !row.closest('[role="dialog"]') && (row.innerText || '').trim()).length
 """
 DIALOGS = '[role="dialog"]:visible, [role="alertdialog"]:visible'
@@ -1660,7 +1667,7 @@ def _host(url):
 
 
 def _visible_controls(scope, name, roles=("button", "menuitem")):
-    """Visible controls with an exact accessible name, outside dialogs unless scope is a dialog."""
+    """Visible enabled controls with an exact accessible name."""
     found = []
     for role in roles:
         try:
@@ -1683,6 +1690,42 @@ def _outside_dialogs(nodes):
         except Exception:
             continue
     return result
+
+
+def _settle(page, done, timeout_seconds=2):
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            if done():
+                return True
+        except Exception:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        page.wait_for_timeout(200)
+
+
+def _press(page, node, done=None):
+    """Click a control; when a covering element or hidden hover state blocks the pointer, dispatch the click.
+
+    A click that Playwright delivered is never repeated, so toggles such as checkboxes are pressed once.
+    """
+    try:
+        node.scroll_into_view_if_needed(timeout=2000)
+    except Exception:
+        pass
+    try:
+        node.click(timeout=2000)
+    except Exception:
+        try:
+            node.evaluate("e => e.click()")
+        except Exception:
+            return False
+    return _settle(page, done) if done else True
+
+
+def _delete_shown(page):
+    return bool(_outside_dialogs(_visible_controls(page, DELETE_NAME)))
 
 
 def open_signed_in(page, url, timeout_seconds=CLEANUP_LOAD_SECONDS):
@@ -1733,40 +1776,106 @@ def _wait_rows(page, script, timeout_seconds):
 def _row_selected(row):
     try:
         return bool(row.evaluate(
-            "r => r.getAttribute('aria-selected') === 'true' || "
+            "r => r.getAttribute('aria-selected') === 'true' || r.classList.contains('is-selected') || "
             "!!r.querySelector('[role=\"checkbox\"][aria-checked=\"true\"], input[type=\"checkbox\"]:checked, "
             "[data-selection-toggle=\"true\"][aria-checked=\"true\"]')"))
     except Exception:
         return False
 
 
-def _select_row(row, additive):
-    """Select one list row through its check control (shown on hover), else by clicking beside its name."""
-    if _row_selected(row):
+def _checkbox(scope):
+    """The selection check control of a row or header; it may only be shown on hover."""
+    for loc in (scope.get_by_role("checkbox", include_hidden=True), scope.locator(ROW_CHECKBOX)):
+        try:
+            if loc.count():
+                return loc.first
+        except Exception:
+            continue
+    return None
+
+
+def _rows(page, selector):
+    loc = page.locator(selector)
+    return [loc.nth(i) for i in range(loc.count())]
+
+
+def _header_check(page):
+    """The list's select-all check in the column header row."""
+    for header in _rows(page, HEADER_ROW):
+        if not header.is_visible():
+            continue
+        try:
+            header.hover(timeout=2000)
+        except Exception:
+            pass
+        check = _checkbox(header)
+        if check is not None:
+            return check
+    try:
+        named = page.get_by_role("checkbox", name=SELECT_ALL_NAME, include_hidden=True)
+        return named.first if named.count() else None
+    except Exception:
+        return None
+
+
+def _select_all(page):
+    check = _header_check(page)
+    if check is None:
+        return False
+    folders = _rows(page, FOLDER_ROW)
+    return _press(page, check, lambda: all(_row_selected(row) for row in folders) or _delete_shown(page))
+
+
+def _set_row(page, row, selected, first):
+    """Select or clear one row through its check control, else by Ctrl+clicking beside its name."""
+    if _row_selected(row) == selected:
         return True
     try:
         row.hover(timeout=2000)
     except Exception:
         pass
-    checks = row.locator(ROW_CHECKBOX)
-    try:
-        for i in range(checks.count()):
-            check = checks.nth(i)
-            if check.is_visible():
-                check.click(timeout=3000)
-                if _row_selected(row):
-                    return True
-                break
-    except Exception:
-        pass
+    done = lambda: _row_selected(row) == selected or (selected and first and _delete_shown(page))
+    check = _checkbox(row)
+    if check is not None:
+        return _press(page, check, done)
     try:
         box = row.bounding_box()
         if box:
-            row.click(position={"x": 6, "y": box["height"] / 2}, timeout=3000,
-                      modifiers=["Control"] if additive else None)
+            row.click(position={"x": 6, "y": box["height"] / 2}, timeout=3000, modifiers=["Control"])
     except Exception:
         pass
-    return _row_selected(row)
+    return _settle(page, done)
+
+
+def _clear_selection(page):
+    """Clear the list selection; raises when the Delete command still shows a selection."""
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+    if _settle(page, lambda: not _delete_shown(page), 1):
+        return
+    check = _header_check(page)
+    if check is not None:
+        _press(page, check, lambda: not _delete_shown(page))
+    for row in _rows(page, FOLDER_ROW) + _rows(page, FILE_ROW):
+        if _row_selected(row):
+            _set_row(page, row, False, False)
+    if _delete_shown(page):
+        raise RuntimeError("the selection in My files could not be cleared")
+
+
+def _select_folders(page):
+    """Select every folder row and no file row; returns the number of selected folders."""
+    folders, files = _rows(page, FOLDER_ROW), _rows(page, FILE_ROW)
+    if _select_all(page):
+        if not files:
+            return len(folders)
+        # Files are cleared only where rows report their selection state.
+        if all(_row_selected(row) for row in folders) and all(_set_row(page, row, False, False) for row in files):
+            return len(folders)
+        _clear_selection(page)
+    return sum(1 for i, row in enumerate(folders) if _set_row(page, row, True, i == 0))
 
 
 def _confirm(page, name, timeout_seconds=10):
@@ -1777,8 +1886,7 @@ def _confirm(page, name, timeout_seconds=10):
         for i in range(dialogs.count()):
             buttons = _visible_controls(dialogs.nth(i), name, ("button",))
             if buttons:
-                buttons[0].click(timeout=3000)
-                return True
+                return _press(page, buttons[0])
         page.wait_for_timeout(300)
     return False
 
@@ -1790,15 +1898,12 @@ def delete_folders(page, rounds=5, timeout_seconds=CLEANUP_ACTION_SECONDS):
         names = _wait_rows(page, FOLDER_ROWS_SCRIPT, CLEANUP_LOAD_SECONDS if not deleted else 3)
         if not names:
             return deleted
-        rows = page.locator(FOLDER_ROW)
-        selected = sum(1 for i in range(rows.count()) if _select_row(rows.nth(i), i > 0))
-        if not selected:
+        if not _select_folders(page):
             raise RuntimeError("the folders in My files could not be selected")
-        controls = _outside_dialogs(_visible_controls(page, DELETE_NAME))
-        if not controls:
+        if not _settle(page, lambda: _delete_shown(page)):
             raise RuntimeError("the Delete command was not shown for the selected folders")
-        controls[0].click(timeout=3000)
-        if not _confirm(page, DELETE_NAME):
+        command = _outside_dialogs(_visible_controls(page, DELETE_NAME))[0]
+        if not _press(page, command) or not _confirm(page, DELETE_NAME):
             raise RuntimeError("the Delete confirmation dialog did not appear")
         deadline = time.monotonic() + timeout_seconds
         while len(page.evaluate(FOLDER_ROWS_SCRIPT)) >= len(names) and time.monotonic() < deadline:
@@ -1822,8 +1927,7 @@ def empty_recycle_bin(page, timeout_seconds=CLEANUP_ACTION_SECONDS):
         if page.evaluate(ITEM_ROWS_SCRIPT):
             raise RuntimeError("the Empty recycle bin command was not shown")
         return False
-    controls[0].click(timeout=3000)
-    if not _confirm(page, CONFIRM_EMPTY_NAME):
+    if not _press(page, controls[0]) or not _confirm(page, CONFIRM_EMPTY_NAME):
         raise RuntimeError("the Empty recycle bin confirmation dialog did not appear")
     deadline = time.monotonic() + timeout_seconds
     while page.evaluate(ITEM_ROWS_SCRIPT) and time.monotonic() < deadline:
@@ -1836,24 +1940,31 @@ def empty_recycle_bin(page, timeout_seconds=CLEANUP_ACTION_SECONDS):
 def clean_onedrive(ctx, files_url=ONEDRIVE_FILES_URL, recycle_url=ONEDRIVE_RECYCLE_URL):
     """Best effort: delete every My files folder, then empty the recycle bin; never fails the run.
 
-    Cancellation does not interrupt it, so files uploaded by a stopped prompt are removed as well.
+    The recycle bin is emptied even when folder deletion fails. Cancellation does not interrupt cleanup,
+    so files uploaded by a stopped prompt are removed as well.
     """
+    def report(error):
+        emit_status("cleanup", f"OneDrive cleanup did not finish: {str(error).splitlines()[0][:300]}")
+
     page = None
     try:
         page = ctx.new_page()
         page.set_default_timeout(CLEANUP_LOAD_SECONDS * 1000)
-        emit_status("cleanup", "Opening OneDrive My files to delete its folders...")
-        open_signed_in(page, files_url)
-        deleted = delete_folders(page)
-        emit_status("cleanup", f"Deleted {deleted} OneDrive folder(s)." if deleted
-                    else "OneDrive My files has no folders to delete.")
+        try:
+            emit_status("cleanup", "Opening OneDrive My files to delete its folders...")
+            open_signed_in(page, files_url)
+            deleted = delete_folders(page)
+            emit_status("cleanup", f"Deleted {deleted} OneDrive folder(s)." if deleted
+                        else "OneDrive My files has no folders to delete.")
+        except Exception as error:
+            report(error)
         emit_status("cleanup", "Emptying the OneDrive recycle bin...")
         open_signed_in(page, recycle_url)
         emptied = empty_recycle_bin(page)
         emit_status("cleanup", "OneDrive recycle bin emptied." if emptied
                     else "OneDrive recycle bin is already empty.")
     except Exception as error:
-        emit_status("cleanup", f"OneDrive cleanup did not finish: {str(error).splitlines()[0][:300]}")
+        report(error)
     finally:
         if page is not None:
             try:
