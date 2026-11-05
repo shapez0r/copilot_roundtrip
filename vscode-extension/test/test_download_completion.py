@@ -734,6 +734,27 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate(rt.ITEM_ROWS_SCRIPT), 0)
         self.assertEqual(self.page.locator('[role="dialog"]').count(), 0)
 
+    def test_onedrive_delete_is_confirmed_in_a_native_dialog(self):
+        markup = self.TABLE_FILES.replace('{rows}', self.FOLDER % ('Documents', '1 item') +
+                                          self.FOLDER % ('Microsoft Copilot Chat Files', '7 items'))
+        markup = markup.replace("const dialog = document.createElement('div');\n              dialog.setAttribute('role', 'dialog');",
+                                "const dialog = document.createElement('dialog');")
+        markup = markup.replace("document.body.appendChild(dialog);", "document.body.appendChild(dialog); dialog.showModal();")
+        self.assertIn("createElement('dialog')", markup)
+        self.page.set_content(markup)
+        self.assertEqual(rt.delete_copilot_folder(self.page), 1)
+        self.assertEqual(self.page.locator('tbody tr button').all_inner_texts(), ['Documents'])
+
+    def test_onedrive_recycle_bin_confirmation_without_dialog_role_is_pressed(self):
+        markup = self.RECYCLE_BIN.replace(
+            "dialog.setAttribute('role', 'dialog');\n            dialog.innerHTML = '<h2>Empty recycle bin?</h2><button id=\"confirm-empty\">Yes</button>",
+            "dialog.innerHTML = '<h2>Empty recycle bin?</h2><button id=\"confirm-empty\">Delete</button>")
+        self.assertNotEqual(markup, self.RECYCLE_BIN)
+        self.page.set_content(markup)
+        self.assertTrue(rt.empty_recycle_bin(self.page))
+        self.assertEqual(self.page.evaluate(rt.ITEM_ROWS_SCRIPT), 0)
+        self.assertEqual(self.page.locator('#confirm-empty').count(), 0)
+
     def test_empty_onedrive_recycle_bin_needs_no_action(self):
         self.page.set_content('<div role="grid"><div role="row"><span role="columnheader">Name</span></div></div>'
                               '<button disabled onclick="this.textContent=\'clicked\'">Empty recycle bin</button>')

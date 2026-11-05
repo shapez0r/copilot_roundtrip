@@ -1768,7 +1768,11 @@ CHECK_POINTS_SCRIPT = r"""
   return points;
 }
 """
-DIALOGS = '[role="dialog"]:visible, [role="alertdialog"]:visible'
+# Confirmation dialogs: ARIA dialogs, native <dialog> elements and modal surfaces.
+DIALOG_ROOTS = '[role="dialog"], [role="alertdialog"], dialog[open], [aria-modal="true"]'
+DIALOGS = ', '.join(f'{part}:visible' for part in DIALOG_ROOTS.split(', '))
+# Marks the command that opened a confirmation so it is never taken for the confirming button.
+COMMAND_MARK = 'data-roundtrip-command'
 DELETE_NAME = re.compile(r"^\W*delete\W*$", re.I)
 CONFIRM_DELETE_NAME = re.compile(r"^\W*(delete|yes)\W*$", re.I)
 MY_FILES_NAME = re.compile(r"^\W*my files\W*$", re.I)
@@ -1800,7 +1804,7 @@ def _outside_dialogs(nodes):
     result = []
     for node in nodes:
         try:
-            if not node.evaluate("e => !!e.closest('[role=\"dialog\"], [role=\"alertdialog\"]')"):
+            if not node.evaluate("(e, sel) => !!e.closest(sel)", DIALOG_ROOTS):
                 result.append(node)
         except Exception:
             continue
@@ -2136,6 +2140,41 @@ def _key_delete(page, gone):
     return _settle(page, lambda: _dialog_shown(page) or gone(), timeout_seconds=3)
 
 
+def _mark_command(node):
+    try:
+        node.evaluate(f"e => e.setAttribute('{COMMAND_MARK}', '1')")
+    except Exception:
+        pass
+
+
+def _confirm_buttons(page, name):
+    """Visible enabled confirming buttons in every frame: those inside a dialog first, else the last matching
+    button outside command bars and menus that is not the command which opened the confirmation."""
+    in_dialogs, loose = [], []
+    outside = (f"e => !e.closest('[{COMMAND_MARK}], [role=\"menubar\"], [role=\"toolbar\"], [role=\"menu\"], "
+               "[data-automationid*=\"CommandBar\" i], [class*=\"CommandBar\" i]')")
+    for scope in _scopes(page):
+        try:
+            dialogs = scope.locator(DIALOGS)
+            for i in range(dialogs.count()):
+                in_dialogs += _visible_controls(dialogs.nth(i), name, ("button",))
+            for role in ("dialog", "alertdialog"):
+                found = scope.get_by_role(role)
+                for i in range(found.count()):
+                    if found.nth(i).is_visible():
+                        in_dialogs += _visible_controls(found.nth(i), name, ("button",))
+        except Exception:
+            pass
+        for node in _visible_controls(scope, name, ("button",)):
+            try:
+                if node.evaluate(outside):
+                    loose.append(node)
+            except Exception:
+                continue
+    # Dialog layers are rendered after the page content, so the last loose match is the confirmation.
+    return in_dialogs or loose[-1:]
+
+
 def _confirm_until(page, name, done, timeout_seconds, required=False):
     """Press the named button of the confirmation dialog that follows a command, then wait until done() holds.
 
@@ -2144,16 +2183,10 @@ def _confirm_until(page, name, done, timeout_seconds, required=False):
     deadline = time.monotonic() + timeout_seconds
     confirmed = False
     while time.monotonic() < deadline:
-        for scope in [] if confirmed else _scopes(page):
-            try:
-                dialogs = scope.locator(DIALOGS)
-                buttons = [b for i in range(dialogs.count())
-                           for b in _visible_controls(dialogs.nth(i), name, ("button",))]
-            except Exception:
-                continue
+        if not confirmed:
+            buttons = _confirm_buttons(page, name)
             if buttons and _press(page, buttons[0]):
                 confirmed = True
-                break
         try:
             if (confirmed or not required) and done():
                 return True
@@ -2185,7 +2218,9 @@ def delete_copilot_folder(page, name=COPILOT_FOLDER_NAME, rounds=5, timeout_seco
         if _select_targets(scope, page):
             if _settle(page, lambda: _delete_shown(page)):
                 emit_status("cleanup", "Clicking Delete in the OneDrive command bar...")
-                started = _press(page, _controls(page, DELETE_NAME)[0])
+                command = _controls(page, DELETE_NAME)[0]
+                _mark_command(command)
+                started = _press(page, command)
             else:
                 started = _key_delete(page, lambda: remaining() < count)
         if not started:
@@ -2214,7 +2249,9 @@ def empty_recycle_bin(page, timeout_seconds=CLEANUP_ACTION_SECONDS):
             raise RuntimeError("the Empty recycle bin command was not shown")
         return False
     emit_status("cleanup", "Clicking Empty recycle bin...")
-    if not _press(page, empty_command()[0]):
+    command = empty_command()[0]
+    _mark_command(command)
+    if not _press(page, command):
         raise RuntimeError("the Empty recycle bin command could not be clicked")
     emit_status("cleanup", "Confirming Empty recycle bin...")
     if not _confirm_until(page, CONFIRM_EMPTY_NAME, lambda: not _item_count(page), timeout_seconds, required=True):
