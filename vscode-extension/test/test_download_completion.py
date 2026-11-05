@@ -796,6 +796,108 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(rt.delete_copilot_folder(self.page), 1)
         self.assertEqual(self.page.frames[1].locator('tbody tr button').all_inner_texts(), ['Documents'])
 
+    # My files as shown by OneDrive: div rows without grid roles, a check circle shown only while the row is
+    # hovered that reacts to real pointer presses, an "N selected" indicator and a command-bar Delete.
+    POINTER_FILES = '''<style>
+        body { margin: 0; font: 14px sans-serif; } #bar { height: 40px; } .list { margin-left: 440px; width: 900px; }
+        .head, .item { display: flex; align-items: center; height: 70px; }
+        .check { width: 80px; } .item .circle { visibility: hidden; display: inline-block; width: 18px; height: 18px;
+          border: 1px solid #333; border-radius: 9px; margin-left: 30px; }
+        .item:hover .circle, .item.sel .circle { visibility: visible; }
+        .icon { width: 44px; height: 36px; } .name { width: 330px; } .size { width: 120px; }
+      </style>
+      <div id="bar"><button>Share</button><span id="count"></span></div>
+      <h1>My files</h1>
+      <div class="list"><div class="head"><span class="check"></span><span>Name</span><span>Modified</span></div>
+        {rows}</div>
+      <script>
+        const items = () => Array.from(document.querySelectorAll('.item'));
+        const sync = () => {
+          const picked = items().filter(r => r.classList.contains('sel'));
+          document.getElementById('count').textContent = picked.length ? picked.length + ' selected' : '';
+          let del = document.getElementById('delete');
+          if (picked.length && !del) {
+            del = document.createElement('button'); del.id = 'delete';
+            del.innerHTML = '<i aria-hidden="true">&#xE74D;</i>Delete';
+            del.onclick = () => {
+              const dialog = document.createElement('div');
+              dialog.setAttribute('role', 'dialog');
+              dialog.innerHTML = '<h2>Delete?</h2><button id="confirm">Delete</button><button>Cancel</button>';
+              dialog.querySelector('#confirm').onclick = () => {
+                items().filter(r => r.classList.contains('sel')).forEach(r => r.remove());
+                dialog.remove(); sync();
+              };
+              document.body.appendChild(dialog);
+            };
+            document.getElementById('bar').appendChild(del);
+          } else if (!picked.length && del) del.remove();
+        };
+        items().forEach(row => {
+          row.querySelector('.circle').addEventListener('pointerdown', e => {
+            e.preventDefault(); row.classList.toggle('sel'); sync();
+          });
+          row.querySelector('.name').addEventListener('click', () => { location.hash = 'opened'; });
+        });
+      </script>'''
+    POINTER_FOLDER = ('<div class="item"><span class="check"><span class="circle"></span></span>'
+                      '<span class="icon" role="img" aria-label="Folder"></span>'
+                      '<span class="name"><i data-icon-name="Glimmer" aria-hidden="true">&#xF4A5;</i>%s</span>'
+                      '<span class="size">%s</span></div>')
+
+    def test_onedrive_hover_check_is_clicked_with_the_pointer_and_deleted(self):
+        rows = (self.POINTER_FOLDER % ('Documents', '1 item') +
+                self.POINTER_FOLDER % ('Microsoft Copilot Chat Files', '13 items'))
+        self.page.set_content(self.POINTER_FILES.replace('{rows}', rows))
+        self.assertEqual(rt.delete_copilot_folder(self.page), 1)
+        self.assertEqual(self.page.locator('.item .name').all_inner_texts(), ['\uf4a5Documents'])
+        self.assertEqual(self.page.evaluate('location.hash'), '')
+        self.assertEqual(self.page.locator('[role="dialog"]').count(), 0)
+
+    def test_onedrive_selection_count_blocks_deleting_other_items(self):
+        rows = (self.POINTER_FOLDER % ('Documents', '1 item') +
+                self.POINTER_FOLDER % ('Microsoft Copilot Chat Files', '13 items'))
+        self.page.set_content(self.POINTER_FILES.replace('{rows}', rows) +
+                              '<script>document.getElementById("count").remove();'
+                              'const c = document.createElement("span"); c.textContent = "2 selected";'
+                              'document.getElementById("bar").appendChild(c);</script>')
+        with self.assertRaises(RuntimeError):
+            rt.delete_copilot_folder(self.page)
+        self.assertEqual(self.page.locator('.item').count(), 2)
+
+    def test_onedrive_delete_key_is_used_when_no_delete_command_appears(self):
+        markup = self.POINTER_FILES.replace('{rows}', self.POINTER_FOLDER % ('Microsoft Copilot Chat Files', '7 items'))
+        markup = markup.replace("if (picked.length && !del) {", "if (false) {") + '''<script>
+          document.addEventListener('keydown', e => {
+            if (e.key !== 'Delete') return;
+            const dialog = document.createElement('div');
+            dialog.setAttribute('role', 'dialog');
+            dialog.innerHTML = '<h2>Delete?</h2><button id="confirm">Delete</button>';
+            dialog.querySelector('#confirm').onclick = () => {
+              document.querySelectorAll('.item.sel').forEach(r => r.remove()); dialog.remove();
+            };
+            document.body.appendChild(dialog);
+          });
+        </script>'''
+        self.page.set_content(markup)
+        self.assertEqual(rt.delete_copilot_folder(self.page), 1)
+        self.assertEqual(self.page.locator('.item').count(), 0)
+
+    def test_onedrive_list_inside_a_shadow_root_is_cleaned(self):
+        markup = self.TABLE_FILES.replace('{rows}', self.FOLDER % ('Documents', '1 item') +
+                                          self.FOLDER % ('Microsoft Copilot Chat Files', '7 items'))
+        self.page.set_content('<div id="host"></div>')
+        self.page.evaluate('''(markup) => {
+            const root = document.getElementById('host').attachShadow({mode: 'open'});
+            const holder = document.createElement('div'); holder.innerHTML = markup; root.appendChild(holder);
+            const script = holder.querySelector('script'); script.remove();
+            const scoped = {getElementById: id => root.getElementById(id), body: root,
+              querySelectorAll: selector => root.querySelectorAll(selector),
+              createElement: tag => document.createElement(tag)};
+            new Function('document', script.textContent)(scoped);
+        }''', markup)
+        self.assertEqual(rt.delete_copilot_folder(self.page), 1)
+        self.assertEqual(self.page.locator('#host tbody tr button').all_inner_texts(), ['Documents'])
+
     def test_prior_long_running_task_card_is_ignored(self):
         self.page.set_content('''<main><article data-roundtrip-prior-msg="1">
           <details open><summary>Old task <span>Completed</span></summary><p>Old step</p></details>

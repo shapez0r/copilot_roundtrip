@@ -1619,34 +1619,91 @@ ACCOUNT_TILES = ('#tilesHolder [role="button"], #tilesHolder .table, [data-test-
                  '[role="listitem"] [role="button"]')
 CONFIRM_SIGN_IN = "#idSIButton9, input[type=\"submit\"][value=\"Yes\" i], button:text-is(\"Yes\")"
 
-# Marks visible list rows as targets (showing exactly the given name, and, when folders is set, a folder icon or an
-# "N items" size) or as other rows; returns the number of targets. OneDrive lists may use ARIA grid roles or native
-# table elements. Names are compared without the "new" marker icon OneDrive shows beside recently changed items.
-TARGET_ROWS_SCRIPT = r"""
-(args) => {
+# Shared helpers for the OneDrive list scripts: they walk open shadow roots as well as the light DOM, because
+# OneDrive may render parts of its list inside web components.
+DEEP_DOM_JS = r"""
+  const up = el => el.parentElement || (el.getRootNode && el.getRootNode().host) || null;
+  const closestDeep = (el, selector) => {
+    for (let node = el; node; node = up(node)) if (node.matches && node.matches(selector)) return node;
+    return null;
+  };
+  const deepAll = selector => {
+    const out = [];
+    const walk = root => {
+      for (const el of root.querySelectorAll('*')) {
+        if (el.matches(selector)) out.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+    };
+    walk(document);
+    return out;
+  };
+  const deepIn = (root, selector) => {
+    const out = [];
+    const walk = node => {
+      for (const el of node.querySelectorAll('*')) {
+        if (el.matches(selector)) out.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+      if (node.shadowRoot) walk(node.shadowRoot);
+    };
+    walk(root);
+    return out;
+  };
   const visible = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
   const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const ROWS = '[role="row"], tr, [data-automationid="DetailsRow"]';
+  const HEADER = '[role="columnheader"], th';
+  const isItemRow = row => visible(row) && !deepIn(row, HEADER).length &&
+    !closestDeep(row, '[role="dialog"], [role="alertdialog"]') && !!norm(row.innerText || row.textContent);
+"""
+
+# Marks list rows as targets (showing exactly the given name, and, when folders is set, a folder icon, a folder label
+# or an "N items" size) or as other rows; returns the number of targets. Rows are ARIA grid rows, table rows or,
+# when the list has neither, the widest single-line strip around the name. Names are compared without the "new"
+# marker icon OneDrive shows beside recently changed items; navigation, headings and breadcrumbs are ignored.
+TARGET_ROWS_SCRIPT = r"""
+(args) => {
+""" + DEEP_DOM_JS + r"""
   const bare = value => norm(String(value || '').replace(/[^\p{L}\p{N}\s.,'&()_-]/gu, ' ')).toLowerCase();
   const name = bare(args.name);
   const showsName = el => [el.innerText || el.textContent, el.getAttribute('aria-label'), el.getAttribute('title')]
-    .some(value => bare(value) === name) ||
+    .some(value => bare(value) === name || bare(value) === 'new ' + name) ||
     Array.from(el.childNodes).some(node => node.nodeType === 3 && bare(node.nodeValue) === name);
-  document.querySelectorAll('[data-roundtrip-target], [data-roundtrip-other]').forEach(el => {
+  deepAll('[data-roundtrip-target], [data-roundtrip-other]').forEach(el => {
     el.removeAttribute('data-roundtrip-target'); el.removeAttribute('data-roundtrip-other');
   });
+  const outsideList = 'nav, header, [role="navigation"], [role="banner"], [role="tree"], [role="treeitem"], ' +
+    '[role="dialog"], [role="alertdialog"], [role="heading"], h1, h2, h3, [role="columnheader"], th, ' +
+    '[aria-label*="breadcrumb" i], [role="menu"], [role="menubar"], [role="toolbar"]';
   const icon = '[data-icon-name*="folder" i], img[alt="folder" i], img[alt^="folder," i], img[src*="folder" i], ' +
     '[aria-label="folder" i], [title="folder" i], [data-automationid*="folder" i]';
-  let targets = 0;
-  for (const row of document.querySelectorAll('[role="row"], tr')) {
-    if (!visible(row) || row.querySelector('[role="columnheader"], th') || row.closest('[role="dialog"]') ||
-        !norm(row.innerText)) continue;
-    const named = Array.from(row.querySelectorAll('*')).some(showsName);
-    const folder = !args.folders || row.querySelector(icon) || Array.from(row.querySelectorAll('*')).some(el =>
-      !el.children.length && /^\d[\d,.\s]*items?$/i.test(norm(el.innerText || el.textContent)));
-    if (named && folder) { row.setAttribute('data-roundtrip-target', '1'); targets++; }
-    else row.setAttribute('data-roundtrip-other', '1');
+  const folderish = row => !args.folders || !!deepIn(row, icon).length ||
+    /(^|,\s*)folder(,|$)/i.test(norm(row.getAttribute('aria-label'))) ||
+    deepIn(row, '*').some(el => !el.children.length &&
+      /^\d[\d,.\s]*items?$/i.test(norm(el.innerText || el.textContent)));
+  // A row strip: the outermost ancestor that stays about one line high around the name.
+  const stripOf = el => {
+    const height = Math.max(el.getBoundingClientRect().height, 16);
+    let row = el;
+    for (let node = up(el); node && node !== document.body && node !== document.documentElement; node = up(node)) {
+      const box = node.getBoundingClientRect();
+      if (box.height > Math.max(height * 3, 80)) break;
+      if (box.height > 0) row = node;
+    }
+    return row;
+  };
+  const rows = new Set(deepAll(ROWS).filter(isItemRow));
+  const targets = new Set();
+  for (const el of deepAll('*')) {
+    if (!visible(el) || !showsName(el) || Array.from(el.children).some(showsName) ||
+        closestDeep(el, outsideList)) continue;
+    const row = closestDeep(el, ROWS) || stripOf(el);
+    if (row && folderish(row)) targets.add(row);
   }
-  return targets;
+  for (const row of targets) row.setAttribute('data-roundtrip-target', '1');
+  for (const row of rows) if (!targets.has(row)) row.setAttribute('data-roundtrip-other', '1');
+  return targets.size;
 }
 """
 TARGET_ROW = '[data-roundtrip-target]'
@@ -1655,17 +1712,19 @@ ROW_CHECKBOX = ('[role="checkbox"], input[type="checkbox"], [data-selection-togg
                 '[data-automationid="DetailsRowCheck"]')
 # Item rows of a list; the header row holds column headers.
 ITEM_ROWS_SCRIPT = r"""
-() => Array.from(document.querySelectorAll('[role="row"], tr')).filter(row =>
-  row.getClientRects().length > 0 && !row.querySelector('[role="columnheader"], th') &&
-  !row.closest('[role="dialog"]') && (row.innerText || '').trim()).length
+() => {
+""" + DEEP_DOM_JS + r"""
+  return deepAll(ROWS).filter(isItemRow).length;
+}
 """
-# Scrolls every scrollable container that holds list rows by about one screen, or to the start when top is set;
+# Scrolls every scrollable container that holds list content by about one screen, or to the start when top is set;
 # returns whether anything moved. Virtualized lists render only the rows near the visible area.
 SCROLL_LISTS_SCRIPT = r"""
 (top) => {
+""" + DEEP_DOM_JS + r"""
   let moved = false;
-  for (const el of document.querySelectorAll('*')) {
-    if (el.scrollHeight <= el.clientHeight + 4 || !el.querySelector('[role="row"], tr')) continue;
+  for (const el of [document.scrollingElement, ...deepAll('*')]) {
+    if (!el || el.scrollHeight <= el.clientHeight + 4) continue;
     if (el !== document.scrollingElement && !/auto|scroll|overlay/.test(getComputedStyle(el).overflowY)) continue;
     const before = el.scrollTop;
     el.scrollTop = top ? 0 : before + Math.max(200, el.clientHeight * 0.8);
@@ -1674,12 +1733,47 @@ SCROLL_LISTS_SCRIPT = r"""
   return moved;
 }
 """
+# The number OneDrive shows in its "N selected" command-bar indicator, or null when no indicator is shown.
+SELECTED_COUNT_SCRIPT = r"""
+() => {
+""" + DEEP_DOM_JS + r"""
+  let count = null;
+  for (const el of deepAll('*')) {
+    if (el.children.length || !visible(el)) continue;
+    const match = norm(el.innerText || el.textContent).match(/^(\d+)\s+(?:items?\s+)?selected$/i);
+    if (match) count = Math.max(count || 0, Number(match[1]));
+  }
+  return count;
+}
+"""
+# Offsets from a row's top-left corner that a user clicks to select it: its check control, else the check column
+# left of the item icon (inside the row, or just left of it when the row starts at the icon).
+CHECK_POINTS_SCRIPT = r"""
+(row) => {
+""" + DEEP_DOM_JS + r"""
+  const box = row.getBoundingClientRect();
+  const y = box.height / 2;
+  const points = [];
+  for (const check of deepIn(row, '[role="checkbox"], input[type="checkbox"], [data-selection-toggle="true"], ' +
+      '[data-automationid="DetailsRowCheck"]')) {
+    const r = check.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0 && getComputedStyle(check).visibility !== 'hidden')
+      points.push([r.left + r.width / 2 - box.left, r.top + r.height / 2 - box.top]);
+  }
+  const icons = deepIn(row, 'img, svg, [data-icon-name], [role="img"]').map(el => el.getBoundingClientRect())
+    .filter(r => r.width > 4 && r.height > 4 && r.left >= box.left - 1);
+  const iconLeft = icons.length ? Math.min(...icons.map(r => r.left)) : box.left + 48;
+  const gap = iconLeft - box.left;
+  points.push([gap >= 24 ? gap / 2 : gap - 28, y]);
+  return points;
+}
+"""
 DIALOGS = '[role="dialog"]:visible, [role="alertdialog"]:visible'
-DELETE_NAME = re.compile(r"^\s*delete\s*$", re.I)
-CONFIRM_DELETE_NAME = re.compile(r"^\s*(delete|yes)\s*$", re.I)
-MY_FILES_NAME = re.compile(r"^\s*my files\s*$", re.I)
-EMPTY_BIN_NAME = re.compile(r"^\s*empty (the )?recycle bin\s*$", re.I)
-CONFIRM_EMPTY_NAME = re.compile(r"^\s*(yes|delete|ok|empty recycle bin|permanently delete)\s*$", re.I)
+DELETE_NAME = re.compile(r"^\W*delete\W*$", re.I)
+CONFIRM_DELETE_NAME = re.compile(r"^\W*(delete|yes)\W*$", re.I)
+MY_FILES_NAME = re.compile(r"^\W*my files\W*$", re.I)
+EMPTY_BIN_NAME = re.compile(r"^\W*empty (the )?recycle bin\W*$", re.I)
+CONFIRM_EMPTY_NAME = re.compile(r"^\W*(yes|delete|ok|empty recycle bin|permanently delete)\W*$", re.I)
 
 
 def _host(url):
@@ -1812,14 +1906,15 @@ def _item_count(page):
     return total
 
 
-def _wait_items(page, timeout_seconds):
-    """Wait until the list shows item rows; returns their number (0 when the list stays empty)."""
+def _wait_items(page, timeout_seconds, args=None):
+    """Wait until the list shows item rows (or, with args, a target row); returns whether anything appeared."""
+    found = lambda: bool(_item_count(page) or (args and _mark_targets(page, args)[1]))
     deadline = time.monotonic() + timeout_seconds
-    count = _item_count(page)
-    while not count and time.monotonic() < deadline:
+    shown = found()
+    while not shown and time.monotonic() < deadline:
         page.wait_for_timeout(500)
-        count = _item_count(page)
-    return count
+        shown = found()
+    return shown
 
 
 def _mark_targets(page, args):
@@ -1871,6 +1966,19 @@ def _open_my_files(page):
     return True
 
 
+def _selected_count(page):
+    """The number in OneDrive's "N selected" indicator, or None when no indicator is shown."""
+    counts = []
+    for scope in _scopes(page):
+        try:
+            value = scope.evaluate(SELECTED_COUNT_SCRIPT)
+        except Exception:
+            continue
+        if value is not None:
+            counts.append(int(value))
+    return max(counts) if counts else None
+
+
 def _row_selected(row):
     try:
         return bool(row.evaluate(
@@ -1897,15 +2005,60 @@ def _rows(page, selector):
     return [loc.nth(i) for i in range(loc.count())]
 
 
+def _pointer_select(page, row, done):
+    """Select a row as a user does: move the pointer over it to reveal its check, then click the check.
+
+    Real pointer events are required by lists that select on pointer down or show the check only on hover. A click
+    that opened the item instead is undone and reported as a failure.
+    """
+    try:
+        row.scroll_into_view_if_needed(timeout=2000)
+        box = row.bounding_box()
+    except Exception:
+        return False
+    if not box or box["width"] <= 0 or box["height"] <= 0:
+        return False
+    url = page.url
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.wait_for_timeout(300)
+    try:
+        # Offsets are taken after hovering, because the check is laid out only while the row is hovered.
+        points = row.evaluate(CHECK_POINTS_SCRIPT) or []
+        box = row.bounding_box() or box
+    except Exception:
+        return False
+    for dx, dy in points[:2]:
+        x, y = box["x"] + dx, box["y"] + dy
+        if x < 0 or y < 0:
+            continue
+        try:
+            page.mouse.move(x, y)
+            page.mouse.click(x, y)
+        except Exception:
+            continue
+        if page.url != url:
+            try:
+                page.go_back(wait_until="domcontentloaded", timeout=CLEANUP_LOAD_SECONDS * 1000)
+            except Exception:
+                pass
+            return False
+        if _settle(page, done):
+            return True
+    return False
+
+
 def _set_row(page, row, selected, first):
-    """Select or clear one row through its check control, else by Ctrl+clicking beside its name."""
+    """Select or clear one row: pointer click on its check, else a dispatched check click, else Ctrl+click."""
     if _row_selected(row) == selected:
+        return True
+    done = lambda: _row_selected(row) == selected or (selected and first and (
+        _delete_shown(page) or bool(_selected_count(page))))
+    if selected and _pointer_select(page, row, done):
         return True
     try:
         row.hover(timeout=2000)
     except Exception:
         pass
-    done = lambda: _row_selected(row) == selected or (selected and first and _delete_shown(page))
     check = _checkbox(row)
     if check is not None:
         return _press(page, check, done)
@@ -1923,15 +2076,23 @@ def _select_targets(scope, page):
     for row in _rows(scope, OTHER_ROW):
         if _row_selected(row) and not _set_row(page, row, False, False):
             raise RuntimeError("another OneDrive item could not be cleared from the selection")
-    selected = sum(1 for i, row in enumerate(_rows(scope, TARGET_ROW)) if _set_row(page, row, True, i == 0))
-    _ensure_only_targets(scope)
+    targets = _rows(scope, TARGET_ROW)
+    # Escape clears a selection whose rows are not exposed, such as items scrolled out of a virtualized list.
+    if _selected_count(page) and not any(_row_selected(row) for row in targets):
+        page.keyboard.press("Escape")
+        _settle(page, lambda: not _selected_count(page))
+    selected = sum(1 for i, row in enumerate(targets) if _set_row(page, row, True, i == 0))
+    _ensure_only_targets(scope, page, len(targets))
     return selected
 
 
-def _ensure_only_targets(scope):
+def _ensure_only_targets(scope, page=None, targets=1):
     # Delete must never apply to anything but the named folder.
     if any(_row_selected(row) for row in _rows(scope, OTHER_ROW)):
         raise RuntimeError("another OneDrive item was selected together with the folder")
+    count = _selected_count(page) if page is not None else None
+    if count is not None and count > targets:
+        raise RuntimeError(f"OneDrive reports {count} selected items; only the folder may be deleted")
 
 
 def _context_delete(scope, page):
@@ -1948,11 +2109,31 @@ def _context_delete(scope, page):
         page.keyboard.press("Escape")
         return False
     try:
-        _ensure_only_targets(scope)
+        _ensure_only_targets(scope, page, len(rows))
     except RuntimeError:
         page.keyboard.press("Escape")
         raise
     return _press(page, menu()[0])
+
+
+def _dialog_shown(page):
+    """Whether a dialog is open in any frame."""
+    for scope in _scopes(page):
+        try:
+            if scope.locator(DIALOGS).count():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _key_delete(page, gone):
+    """Press the Delete key on the selected row; succeeds when a confirmation dialog opens or the row goes."""
+    try:
+        page.keyboard.press("Delete")
+    except Exception:
+        return False
+    return _settle(page, lambda: _dialog_shown(page) or gone(), timeout_seconds=3)
 
 
 def _confirm_until(page, name, done, timeout_seconds, required=False):
@@ -1985,28 +2166,34 @@ def _confirm_until(page, name, done, timeout_seconds, required=False):
 def delete_copilot_folder(page, name=COPILOT_FOLDER_NAME, rounds=5, timeout_seconds=CLEANUP_ACTION_SECONDS):
     """Select only the named folder in the open My files list, delete it with confirmation, and return the count.
 
-    The row check selects the folder for the command-bar Delete; the row's context menu is used when no Delete
-    command appears.
+    The row check selects the folder for the command-bar Delete (or the Delete key when no command appears); the
+    row's context menu is used when neither starts the deletion.
     """
     args = {"name": name, "folders": True}
-    _wait_items(page, CLEANUP_LOAD_SECONDS)
+    _wait_items(page, CLEANUP_LOAD_SECONDS, args)
     scope, count = _find_targets(page, args)
     if not count and _open_my_files(page):
-        _wait_items(page, CLEANUP_LOAD_SECONDS)
+        _wait_items(page, CLEANUP_LOAD_SECONDS, args)
         scope, count = _find_targets(page, args)
     deleted = 0
     for _ in range(rounds):
         if not count:
             return deleted
-        emit_status("cleanup", f"Selecting {name} in OneDrive My files...")
-        if _select_targets(scope, page) and _settle(page, lambda: _delete_shown(page)):
-            started = _press(page, _controls(page, DELETE_NAME)[0])
-        else:
+        emit_status("cleanup", f"Selecting {name} with its row check in OneDrive My files...")
+        remaining = lambda: int(scope.evaluate(TARGET_ROWS_SCRIPT, args) or 0)
+        started = False
+        if _select_targets(scope, page):
+            if _settle(page, lambda: _delete_shown(page)):
+                emit_status("cleanup", "Clicking Delete in the OneDrive command bar...")
+                started = _press(page, _controls(page, DELETE_NAME)[0])
+            else:
+                started = _key_delete(page, lambda: remaining() < count)
+        if not started:
+            emit_status("cleanup", f"Using Delete from the context menu of {name}...")
             started = _context_delete(scope, page)
         if not started:
             raise RuntimeError(f"{name} could not be selected for deletion")
         emit_status("cleanup", f"Confirming deletion of {name}...")
-        remaining = lambda: int(scope.evaluate(TARGET_ROWS_SCRIPT, args) or 0)
         if not _confirm_until(page, CONFIRM_DELETE_NAME, lambda: remaining() < count, timeout_seconds):
             raise RuntimeError(f"{name} was not deleted")
         left = remaining()
