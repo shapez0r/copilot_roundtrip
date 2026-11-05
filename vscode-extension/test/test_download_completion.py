@@ -700,6 +700,17 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(self.page.locator('tbody tr').count(), 0)
         self.assertEqual(self.page.locator('[role="dialog"]').count(), 0)
 
+    def test_onedrive_folder_with_a_new_item_marker_is_deleted(self):
+        # The name follows a "new" marker icon and its screen-reader label, as in OneDrive My files.
+        row = ('<tr><td><span class="check"><input type="checkbox" aria-label="Select row"><i></i></span></td>'
+               '<td><img alt="" src="data:,folder"><button><i data-icon-name="Glimmer" aria-hidden="true">&#xF4A5;</i>'
+               '<span style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)">New</span>'
+               'Microsoft Copilot Chat Files</button></td><td>2 hours ago</td><td>copilotuser</td><td>13 items</td></tr>')
+        rows = self.FOLDER % ('Documents', '1 item') + row
+        self.page.set_content(self.TABLE_FILES.replace('{rows}', rows))
+        self.assertEqual(rt.delete_copilot_folder(self.page), 1)
+        self.assertEqual(self.page.locator('tbody tr button').all_inner_texts(), ['Documents'])
+
     def test_onedrive_preselected_items_are_cleared_before_deleting_the_copilot_folder(self):
         rows = (self.FOLDER % ('Documents', '1 item') + self.FILE % 'notes.docx' +
                 self.FOLDER % ('Microsoft Copilot Chat Files', '7 items'))

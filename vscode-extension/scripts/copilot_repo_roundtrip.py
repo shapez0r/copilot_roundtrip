@@ -1619,14 +1619,18 @@ ACCOUNT_TILES = ('#tilesHolder [role="button"], #tilesHolder .table, [data-test-
                  '[role="listitem"] [role="button"]')
 CONFIRM_SIGN_IN = "#idSIButton9, input[type=\"submit\"][value=\"Yes\" i], button:text-is(\"Yes\")"
 
-# Marks visible list rows as targets (an element showing exactly the given name, and, when folders is set, a folder
-# icon or an "N items" size) or as other rows; returns the number of targets. OneDrive lists may use ARIA grid roles
-# or native table elements.
+# Marks visible list rows as targets (showing exactly the given name, and, when folders is set, a folder icon or an
+# "N items" size) or as other rows; returns the number of targets. OneDrive lists may use ARIA grid roles or native
+# table elements. Names are compared without the "new" marker icon OneDrive shows beside recently changed items.
 TARGET_ROWS_SCRIPT = r"""
 (args) => {
   const visible = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
   const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
-  const name = norm(args.name).toLowerCase();
+  const bare = value => norm(String(value || '').replace(/[^\p{L}\p{N}\s.,'&()_-]/gu, ' ')).toLowerCase();
+  const name = bare(args.name);
+  const showsName = el => [el.innerText || el.textContent, el.getAttribute('aria-label'), el.getAttribute('title')]
+    .some(value => bare(value) === name) ||
+    Array.from(el.childNodes).some(node => node.nodeType === 3 && bare(node.nodeValue) === name);
   document.querySelectorAll('[data-roundtrip-target], [data-roundtrip-other]').forEach(el => {
     el.removeAttribute('data-roundtrip-target'); el.removeAttribute('data-roundtrip-other');
   });
@@ -1636,8 +1640,7 @@ TARGET_ROWS_SCRIPT = r"""
   for (const row of document.querySelectorAll('[role="row"], tr')) {
     if (!visible(row) || row.querySelector('[role="columnheader"], th') || row.closest('[role="dialog"]') ||
         !norm(row.innerText)) continue;
-    const named = Array.from(row.querySelectorAll('*')).some(el =>
-      norm(el.innerText || el.textContent).toLowerCase() === name);
+    const named = Array.from(row.querySelectorAll('*')).some(showsName);
     const folder = !args.folders || row.querySelector(icon) || Array.from(row.querySelectorAll('*')).some(el =>
       !el.children.length && /^\d[\d,.\s]*items?$/i.test(norm(el.innerText || el.textContent)));
     if (named && folder) { row.setAttribute('data-roundtrip-target', '1'); targets++; }
